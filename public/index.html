@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>IAM Self-Service</title>
+<link rel="stylesheet" href="/css/style.css"/>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">IAM Self-Service</div>
+  <div style="display:flex; align-items:center;">
+    <div id="userInfo" class="user-info hidden">
+      <span id="userLabel"></span>
+      <button id="logoutBtn" class="btn-link">Log out</button>
+    </div>
+    <a href="/admin" class="btn-link admin-link">Admin</a>
+  </div>
+</div>
+
+<div id="loginView" class="center-view">
+  <form id="loginForm" class="card">
+    <h1>Sign in</h1>
+    <p class="muted">Use your Active Directory account</p>
+    <label>Username
+      <input type="text" id="loginUsername" placeholder="username@domain.com" autocomplete="username" required/>
+    </label>
+    <label>Password
+      <input type="password" id="loginPassword" autocomplete="current-password" required/>
+    </label>
+    <div id="loginError" class="error hidden"></div>
+    <button type="submit" class="btn-primary">Sign in</button>
+  </form>
+</div>
+
+<div id="appView" class="app-view hidden">
+  <div class="card">
+    <h2>Find a user</h2>
+    <input type="text" id="searchInput" placeholder="Search by name or username, or enter an exact ID"/>
+    <div id="searchResults" class="results"></div>
+  </div>
+
+  <div id="selectedUserCard" class="card hidden">
+    <h2 id="selUserName"></h2>
+    <div id="selUserMeta" class="muted"></div>
+    <div class="actions">
+      <button id="unlockBtn" class="btn-primary hidden">Unlock account</button>
+      <button id="resetBtn" class="btn-secondary hidden">Reset password</button>
+    </div>
+    <div id="actionMessage" class="hidden"></div>
+  </div>
+
+  <div class="card">
+    <div class="row-between">
+      <h2>My activity</h2>
+      <button id="refreshActivityBtn" class="btn-link">Refresh</button>
+    </div>
+    <p class="muted">Your logins and actions in this portal, most recent first.</p>
+    <div id="activityTable" style="overflow-x:auto;"></div>
+  </div>
+</div>
+
+<div id="resetModal" class="modal hidden">
+  <div class="modal-card">
+    <h3>Reset password</h3>
+    <p class="muted" id="resetForUser"></p>
+    <label>New password
+      <input type="password" id="newPassword" minlength="8"/>
+    </label>
+    <label>Confirm password
+      <input type="password" id="confirmPassword" minlength="8"/>
+    </label>
+    <label class="checkbox" id="forceChangeRow">
+      <input type="checkbox" id="forceChange" checked/>
+      Require password change at next logon
+    </label>
+    <div id="resetError" class="error hidden"></div>
+    <div class="modal-actions">
+      <button id="cancelReset" class="btn-link">Cancel</button>
+      <button id="confirmReset" class="btn-primary">Reset password</button>
+    </div>
+  </div>
+</div>
+
+<script src="/js/app.js"></script>
+</body>
+</html>

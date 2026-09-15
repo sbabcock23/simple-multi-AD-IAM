@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>IAM Admin</title>
+<link rel="stylesheet" href="/css/style.css"/>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">IAM Admin</div>
+  <div style="display:flex; align-items:center;">
+    <div id="adminInfo" class="user-info hidden">
+      <span id="adminLabel"></span>
+      <button id="adminLogoutBtn" class="btn-link">Log out</button>
+    </div>
+    <a href="/" class="btn-link admin-link">User portal</a>
+  </div>
+</div>
+
+<div id="adminLoginView" class="center-view">
+  <form id="adminLoginForm" class="card">
+    <h1>Admin sign in</h1>
+    <label>Username <input type="text" id="adminUsername" required/></label>
+    <label>Password <input type="password" id="adminPassword" required/></label>
+    <div id="adminLoginError" class="error hidden"></div>
+    <button type="submit" class="btn-primary">Sign in</button>
+  </form>
+</div>
+
+<div id="adminAppView" class="app-view hidden">
+
+  <div class="card">
+    <div class="row-between">
+      <h2>Domains</h2>
+      <button id="newDomainBtn" class="btn-primary">Add domain</button>
+    </div>
+    <p class="muted">Each domain maps to the part after @ in a user's login (e.g. contoso.com). Users authenticate with their own AD credentials — there is no stored service account.</p>
+    <div id="domainsTable"></div>
+  </div>
+
+  <div class="card">
+    <h2>Audit settings</h2>
+    <p class="muted">Global switch controls whether any logging happens. Each domain also has its own on/off toggle (in its edit form) which only matters while logging is globally on.</p>
+    <label class="checkbox"><input type="checkbox" id="globalAuditEnabled"/> Enable audit logging (global)</label>
+    <button id="saveSettingsBtn" class="btn-primary" style="margin-top:8px;">Save</button>
+    <span id="settingsSaved" class="success hidden" style="margin-left:10px;">Saved.</span>
+  </div>
+
+  <div class="card">
+    <div class="row-between">
+      <h2>Audit log</h2>
+      <button id="downloadAuditBtn" class="btn-secondary">Download CSV</button>
+    </div>
+    <div class="grid2">
+      <label>Domain
+        <select id="auditDomainFilter">
+          <option value="">All domains</option>
+          <option value="unmatched">Unmatched domain attempts</option>
+        </select>
+      </label>
+      <label>Event type
+        <select id="auditEventFilter">
+          <option value="">All events</option>
+          <option value="login">Login</option>
+          <option value="logout">Logout</option>
+          <option value="search">Search</option>
+          <option value="unlock">Unlock</option>
+          <option value="reset_password">Reset password</option>
+        </select>
+      </label>
+      <label>Result
+        <select id="auditResultFilter">
+          <option value="">Any</option>
+          <option value="1">Success</option>
+          <option value="0">Failure</option>
+        </select>
+      </label>
+      <label>&nbsp;
+        <button id="refreshAuditBtn" class="btn-secondary" style="width:100%; margin-top:6px;">Refresh</button>
+      </label>
+    </div>
+    <div id="auditTable" style="margin-top:12px; overflow-x:auto;"></div>
+  </div>
+
+  <div class="card">
+    <div class="row-between">
+      <h2>Admin users</h2>
+      <button id="newAdminBtn" class="btn-primary">Add admin</button>
+    </div>
+    <div id="adminsTable"></div>
+  </div>
+</div>
+
+<div id="domainModal" class="modal hidden">
+  <div class="modal-card wide">
+    <h3 id="domainModalTitle">Add domain</h3>
+    <input type="hidden" id="domainId"/>
+    <div class="grid2">
+      <label>Display name <input id="dName" placeholder="Contoso Corp"/></label>
+      <label>Email domain suffix <input id="dSuffix" placeholder="contoso.com"/></label>
+    </div>
+    <label>Base DN <input id="dBaseDn" placeholder="DC=contoso,DC=com"/></label>
+
+    <h4>LDAP servers</h4>
+    <p class="muted" style="margin-top:0;">Add one or more servers, e.g. <code>ldaps://dc1.contoso.com:636</code>. Multiple servers give automatic failover.</p>
+    <div id="dServersList"></div>
+    <button type="button" id="addServerBtn" class="btn-link">+ Add another server</button>
+
+    <label class="checkbox" style="margin-top:16px;"><input type="checkbox" id="dTls" checked/> Verify TLS certificate</label>
+    <label class="checkbox"><input type="checkbox" id="dEnabled" checked/> Domain enabled</label>
+    <label class="checkbox"><input type="checkbox" id="dAuditEnabled" checked/> Enable audit logging for this domain</label>
+
+    <h4>Features shown to end users for this domain</h4>
+    <label class="checkbox"><input type="checkbox" id="dFeatUnlock" checked/> Allow account unlock</label>
+    <label class="checkbox"><input type="checkbox" id="dFeatReset" checked/> Allow password reset</label>
+    <label class="checkbox"><input type="checkbox" id="dFeatForce" checked/> Allow "force change at next logon"</label>
+
+    <div id="domainTestResult" class="hidden" style="margin-top:12px; font-size:13px;"></div>
+    <div id="domainError" class="error hidden"></div>
+    <div class="modal-actions">
+      <button id="testDomainBtn" class="btn-secondary" type="button">Test connection</button>
+      <div>
+        <button id="cancelDomain" class="btn-link" type="button">Cancel</button>
+        <button id="saveDomain" class="btn-primary" type="button">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="adminModal" class="modal hidden">
+  <div class="modal-card">
+    <h3>Add admin user</h3>
+    <label>Username <input id="newAdminUsername"/></label>
+    <label>Password <input type="password" id="newAdminPassword"/></label>
+    <div id="adminModalError" class="error hidden"></div>
+    <div class="modal-actions">
+      <button id="cancelAdmin" class="btn-link">Cancel</button>
+      <button id="saveAdmin" class="btn-primary">Save</button>
+    </div>
+  </div>
+</div>
+
+<script src="/js/admin.js"></script>
+</body>
+</html>

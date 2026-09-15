@@ -1,0 +1,20 @@
+services:
+  iam-app:
+    build: .
+    image: iam-self-service:latest
+    ports:
+      - "3000:3000"
+    environment:
+      JWT_SECRET: ${JWT_SECRET:-please-change-this-jwt-secret}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-please-change-this-encryption-key}
+      ADMIN_BOOTSTRAP_USER: ${ADMIN_BOOTSTRAP_USER:-admin}
+      ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-ChangeMe123!}
+      COOKIE_SECURE: "false"
+      TRUST_PROXY: ${TRUST_PROXY:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - iam-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  iam-data:
