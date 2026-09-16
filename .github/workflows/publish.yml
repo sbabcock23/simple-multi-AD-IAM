@@ -34,5 +34,5 @@ jobs:
         push: true
         # Replace 'your-dockerhub-username' and 'your-repo-name' with your actual setup
         tags: |
-          ${{ secrets.DOCKERHUB_USERNAME }}/simple-multi-AD-IAM:latest
-          ${{ secrets.DOCKERHUB_USERNAME }}/simple-multi-AD-IAM:${{ github.sha }}
+          ${{ secrets.DOCKERHUB_USERNAME }}/simple-multi-ad-iam:latest
+          ${{ secrets.DOCKERHUB_USERNAME }}/simple-multi-ad-iam:${{ github.sha }}
