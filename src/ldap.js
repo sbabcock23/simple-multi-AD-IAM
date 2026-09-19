@@ -3,6 +3,7 @@ const net = require('net');
 const tls = require('tls');
 const { URL } = require('url');
 const logger = require('./logger');
+const cryptoHelper = require('./crypto');
 
 // Creates a client configured for a domain's full list of LDAP servers.
 // ldapjs accepts an array of URLs directly and handles failover between them.
@@ -23,16 +24,10 @@ function createClient(domainConfig) {
   // that: we log the failure and let the in-flight bind/search/modify
   // promise reject normally instead.
   client.on('error', (err) => {
-    logger.warn('ldap_client_error', {
-      urls: (domainConfig.ldap_urls || []).join(','),
-      ...logger.errInfo(err),
-    });
+    logger.warn('ldap_client_error', { urls: (domainConfig.ldap_urls || []).join(','), ...logger.errInfo(err) });
   });
   client.on('connectError', (err) => {
-    logger.warn('ldap_connect_error', {
-      urls: (domainConfig.ldap_urls || []).join(','),
-      ...logger.errInfo(err),
-    });
+    logger.warn('ldap_connect_error', { urls: (domainConfig.ldap_urls || []).join(','), ...logger.errInfo(err) });
   });
 
   return client;
@@ -53,29 +48,25 @@ function unbindClient(client) {
   });
 }
 
-// Binds as the signed-in end user's own AD account (their username/password,
-// captured at login) and runs `fn` against that authenticated connection.
-// There is no separate service account: every directory operation - search,
-// unlock, or password reset - is performed with the acting user's own
-// credentials, so their AD account must have the necessary delegated rights.
-async function withUserBind(domainConfig, username, password, fn) {
+// Binds using an already-known identity string (DN, UPN, or
+// DOMAIN\sAMAccountName) and runs `fn` against that authenticated
+// connection. There is no separate service account: every directory
+// operation - search, unlock, or password reset - is performed with the
+// acting user's own credentials, so their AD account must have the
+// necessary delegated rights.
+async function withUserBind(domainConfig, bindIdentity, password, fn) {
   const client = createClient(domainConfig);
   try {
-    logger.debug('ldap_bind_attempt', { username, urls: domainConfig.ldap_urls.join(',') });
-    await bindClient(client, username, password);
-    logger.debug('ldap_bind_success', { username });
+    logger.debug('ldap_bind_attempt', { bindIdentity, urls: domainConfig.ldap_urls.join(',') });
+    await bindClient(client, bindIdentity, password);
+    logger.debug('ldap_bind_success', { bindIdentity });
     return await fn(client);
   } catch (err) {
-    logger.warn('ldap_operation_failed', { username, ...logger.errInfo(err) });
+    logger.warn('ldap_operation_failed', { bindIdentity, ...logger.errInfo(err) });
     throw err;
   } finally {
     await unbindClient(client);
   }
-}
-
-async function authenticateUser(domainConfig, username, password) {
-  await withUserBind(domainConfig, username, password, async () => true);
-  return true;
 }
 
 function searchAsync(client, base, options) {
@@ -132,35 +123,158 @@ function mapUser(u) {
 
 const USER_ATTRIBUTES = ['dn', 'sAMAccountName', 'cn', 'displayName', 'userPrincipalName', 'lockoutTime', 'userAccountControl', 'mail'];
 
-async function searchUsers(domainConfig, username, password, query) {
-  return withUserBind(domainConfig, username, password, async (client) => {
+// LDAP_MATCHING_RULE_IN_CHAIN: Active Directory's "walk the whole nested
+// group chain" operator. Used here so a helpdesk account that's a member of
+// an allowed group indirectly (nested inside another group) is recognized,
+// not just direct members.
+const MATCHING_RULE_IN_CHAIN = '1.2.840.113556.1.4.1941';
+
+async function resolveGroupDns(client, baseDn, groupNames) {
+  const names = (groupNames || []).map((n) => String(n).trim()).filter(Boolean);
+  if (!names.length) return [];
+  const orClauses = names.map((n) => `(cn=${escapeFilter(n)})`).join('');
+  const filter = `(&(objectClass=group)(|${orClauses}))`;
+  const results = await searchAsync(client, baseDn, { filter, scope: 'sub', attributes: ['dn', 'cn'], sizeLimit: names.length + 5 });
+  return results.map((r) => r.dn);
+}
+
+// Resolves "this email address -> this AD account" using the domain's
+// optional, narrowly-scoped lookup account. This is the ONLY thing that
+// account is ever used for - it never performs a search-for-unlock,
+// unlock, or password reset; those always run as the signed-in user, once
+// bindWithFallback below has established their real identity. Returns null
+// (never throws for "not found") so callers can fall through to other
+// resolution strategies; genuine bind/connection errors do still throw.
+async function lookupByMail(domainConfig, mailValue) {
+  if (!domainConfig.lookup_bind_dn || !domainConfig.lookup_bind_password_enc) return null;
+  const client = createClient(domainConfig);
+  try {
+    const lookupPassword = cryptoHelper.decrypt(domainConfig.lookup_bind_password_enc);
+    await bindClient(client, domainConfig.lookup_bind_dn, lookupPassword);
+    const q = escapeFilter(mailValue);
+    const filter = `(&(objectClass=user)(objectCategory=person)(mail=${q}))`;
+    logger.debug('ldap_mail_lookup', { baseDn: domainConfig.base_dn });
+    const results = await searchAsync(client, domainConfig.base_dn, {
+      filter, scope: 'sub', attributes: ['dn', 'userPrincipalName', 'sAMAccountName'], sizeLimit: 1,
+    });
+    return results[0] ? { dn: results[0].dn, userPrincipalName: results[0].userPrincipalName, sAMAccountName: results[0].sAMAccountName } : null;
+  } finally {
+    await unbindClient(client);
+  }
+}
+
+// Tries to authenticate with the value the person typed - which may be
+// their userPrincipalName, their email address (the AD `mail` attribute,
+// which can live in a totally different domain than the UPN or the AD
+// domain itself), or, when the domain has a NetBIOS name configured, their
+// sAMAccountName. AD's simple bind only natively accepts a DN, a UPN, or
+// "NETBIOS\sAMAccountName" - it does not accept an arbitrary "mail" value
+// directly - so up to three things are tried in order, stopping at the
+// first that authenticates successfully:
+//   1. Bind with exactly what was typed (works whenever it's already a
+//      valid UPN, or whenever mail happens to equal the UPN).
+//   2. If a lookup account is configured for this domain: resolve the real
+//      account by its actual `mail` attribute, then bind with its DN. This
+//      is the authoritative path for "login by email" when the email
+//      domain differs from both the UPN suffix and the AD domain.
+//   3. If a NetBIOS domain name is configured: bind as
+//      NETBIOS\<part before '@'>, assuming that's the sAMAccountName - a
+//      fallback heuristic for when no lookup account is configured.
+// Once authenticateAndAuthorize() below finds the actual user object (by
+// UPN, mail, or sAMAccountName), its DN is used for every subsequent bind
+// in the session, regardless of which identifier the person originally
+// typed or which of the methods above resolved it.
+async function bindWithFallback(domainConfig, typedIdentifier, password) {
+  const atIdx = typedIdentifier.indexOf('@');
+  const localPart = atIdx > -1 ? typedIdentifier.slice(0, atIdx) : typedIdentifier;
+
+  const attempts = [typedIdentifier];
+  if (domainConfig.lookup_bind_dn) {
+    try {
+      const found = await lookupByMail(domainConfig, typedIdentifier);
+      if (found) attempts.push(found.dn);
+      else logger.debug('ldap_mail_lookup_no_match', { typedIdentifier });
+    } catch (err) {
+      logger.warn('ldap_mail_lookup_failed', { typedIdentifier, ...logger.errInfo(err) });
+    }
+  }
+  if (domainConfig.netbios_name) {
+    attempts.push(`${domainConfig.netbios_name}\\${localPart}`);
+  }
+
+  let lastErr = null;
+  for (const attempt of attempts) {
+    const client = createClient(domainConfig);
+    try {
+      logger.debug('ldap_bind_attempt', { bindIdentity: attempt });
+      await bindClient(client, attempt, password);
+      logger.debug('ldap_bind_success', { bindIdentity: attempt });
+      return { client, localPart };
+    } catch (err) {
+      lastErr = err;
+      await unbindClient(client);
+    }
+  }
+  throw lastErr || new Error('Authentication failed');
+}
+
+// Authenticates the typed identifier/password against a domain, then
+// verifies the resulting account is a (possibly nested) member of at least
+// one of the domain's allowed AD groups. Returns the matched user object on
+// success (its `dn` is what subsequent operations bind with), or throws
+// with a `code` describing why it was rejected.
+async function authenticateAndAuthorize(domainConfig, typedIdentifier, password, allowedGroupNames) {
+  const { client, localPart } = await bindWithFallback(domainConfig, typedIdentifier, password);
+  try {
+    const groupDns = await resolveGroupDns(client, domainConfig.base_dn, allowedGroupNames);
+    if (!groupDns.length) {
+      throw Object.assign(new Error('No configured allowed groups could be found in this domain'), { code: 'NO_ALLOWED_GROUPS' });
+    }
+
+    const q = escapeFilter(typedIdentifier);
+    const qLocal = escapeFilter(localPart);
+    const memberClauses = groupDns.map((dn) => `(memberOf:${MATCHING_RULE_IN_CHAIN}:=${escapeFilter(dn)})`).join('');
+    const filter =
+      `(&(objectClass=user)(objectCategory=person)` +
+      `(|(userPrincipalName=${q})(mail=${q})(sAMAccountName=${qLocal}))` +
+      `(|${memberClauses}))`;
+
+    logger.debug('ldap_authorize_search', { baseDn: domainConfig.base_dn, groupCount: groupDns.length });
+    const results = await searchAsync(client, domainConfig.base_dn, {
+      filter, scope: 'sub', attributes: USER_ATTRIBUTES, sizeLimit: 1,
+    });
+    if (!results[0]) {
+      throw Object.assign(new Error('User not found, or not a member of an allowed group'), { code: 'NOT_AUTHORIZED' });
+    }
+    return mapUser(results[0]);
+  } finally {
+    await unbindClient(client);
+  }
+}
+
+async function searchUsers(domainConfig, bindDn, password, query) {
+  return withUserBind(domainConfig, bindDn, password, async (client) => {
     const q = escapeFilter(query);
     const filter =
       `(&(objectCategory=person)(objectClass=user)` +
       `(|(sAMAccountName=*${q}*)(cn=*${q}*)(displayName=*${q}*)(userPrincipalName=*${q}*)))`;
     logger.debug('ldap_search', { baseDn: domainConfig.base_dn, filter });
     const results = await searchAsync(client, domainConfig.base_dn, {
-      filter,
-      scope: 'sub',
-      attributes: USER_ATTRIBUTES,
-      sizeLimit: 25,
+      filter, scope: 'sub', attributes: USER_ATTRIBUTES, sizeLimit: 25,
     });
     return results.map(mapUser);
   });
 }
 
-async function getUserByIdentifier(domainConfig, username, password, identifier) {
-  return withUserBind(domainConfig, username, password, async (client) => {
+async function getUserByIdentifier(domainConfig, bindDn, password, identifier) {
+  return withUserBind(domainConfig, bindDn, password, async (client) => {
     const q = escapeFilter(identifier);
     const filter =
       `(&(objectCategory=person)(objectClass=user)` +
       `(|(sAMAccountName=${q})(userPrincipalName=${q})(distinguishedName=${q})))`;
     logger.debug('ldap_lookup', { baseDn: domainConfig.base_dn, filter });
     const results = await searchAsync(client, domainConfig.base_dn, {
-      filter,
-      scope: 'sub',
-      attributes: USER_ATTRIBUTES,
-      sizeLimit: 1,
+      filter, scope: 'sub', attributes: USER_ATTRIBUTES, sizeLimit: 1,
     });
     return results[0] ? mapUser(results[0]) : null;
   });
@@ -168,10 +282,7 @@ async function getUserByIdentifier(domainConfig, username, password, identifier)
 
 function modify(client, dn, attribute, value) {
   return new Promise((resolve, reject) => {
-    const change = new ldap.Change({
-      operation: 'replace',
-      modification: { type: attribute, values: [value] },
-    });
+    const change = new ldap.Change({ operation: 'replace', modification: { type: attribute, values: [value] } });
     client.modify(dn, change, (err) => {
       if (err) reject(err);
       else resolve();
@@ -179,8 +290,8 @@ function modify(client, dn, attribute, value) {
   });
 }
 
-async function unlockUser(domainConfig, username, password, dn) {
-  return withUserBind(domainConfig, username, password, (client) => {
+async function unlockUser(domainConfig, bindDn, password, dn) {
+  return withUserBind(domainConfig, bindDn, password, (client) => {
     logger.debug('ldap_unlock', { targetDn: dn });
     return modify(client, dn, 'lockoutTime', '0');
   });
@@ -191,13 +302,13 @@ function encodeAdPassword(password) {
   return Buffer.from(`"${password}"`, 'utf16le');
 }
 
-async function resetPassword(domainConfig, username, password, dn, newPassword, forceChangeAtLogon) {
+async function resetPassword(domainConfig, bindDn, password, dn, newPassword, forceChangeAtLogon) {
   const allLdaps = domainConfig.ldap_urls.length > 0 &&
     domainConfig.ldap_urls.every((u) => u.toLowerCase().startsWith('ldaps://'));
   if (!allLdaps) {
     throw new Error('Password reset requires every configured LDAP server for this domain to use LDAPS.');
   }
-  return withUserBind(domainConfig, username, password, async (client) => {
+  return withUserBind(domainConfig, bindDn, password, async (client) => {
     logger.debug('ldap_reset_password', { targetDn: dn, forceChangeAtLogon: !!forceChangeAtLogon });
     await new Promise((resolve, reject) => {
       const change = new ldap.Change({
@@ -255,8 +366,6 @@ function testOneServer(urlStr, tlsRejectUnauthorized) {
       return finish({ url: urlStr, ok: false, error: e.message });
     }
 
-    // Same reasoning as the client 'error' listener above: an unhandled
-    // socket 'error' event would otherwise crash the process.
     socket.on('error', (err) => {
       finish({ url: urlStr, ok: false, error: err.message });
     });
@@ -268,7 +377,8 @@ function testOneServer(urlStr, tlsRejectUnauthorized) {
 }
 
 module.exports = {
-  authenticateUser,
+  authenticateAndAuthorize,
+  lookupByMail,
   searchUsers,
   getUserByIdentifier,
   unlockUser,

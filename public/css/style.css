@@ -27,23 +27,27 @@ body {
   display: flex; align-items: center; justify-content: center;
   min-height: calc(100vh - 60px); padding: 24px;
 }
-.app-view { max-width: 720px; margin: 32px auto; padding: 0 16px; display: flex; flex-direction: column; gap: 20px; }
+body { overflow-x: hidden; }
+.app-view { max-width: 720px; margin: 32px auto; padding: 0 16px; display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.app-view.admin-view { max-width: 1100px; }
 .card {
   background: var(--card); border: 1px solid var(--border); border-radius: 12px;
   padding: 24px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); width: 100%; max-width: 420px;
+  min-width: 0; box-sizing: border-box;
 }
-.app-view .card { max-width: none; }
-.wide { max-width: 640px; width: 100%; }
+.app-view .card { max-width: 100%; }
+.wide { max-width: 720px; width: 100%; }
 h1 { font-size: 22px; margin: 0 0 4px; }
 h2 { font-size: 18px; margin: 0 0 12px; }
 h3 { margin-top: 0; }
 h4 { margin: 16px 0 4px; font-size: 14px; }
 .muted { color: var(--muted); font-size: 14px; }
 label { display: block; margin: 12px 0; font-size: 14px; font-weight: 500; }
-input[type=text], input[type=password], input:not([type]) {
+input[type=text], input[type=password], input[type=number], input[type=email], select, textarea, input:not([type]) {
   width: 100%; padding: 10px 12px; margin-top: 6px; border: 1px solid var(--border);
-  border-radius: 8px; font-size: 14px;
+  border-radius: 8px; font-size: 14px; font-family: inherit; box-sizing: border-box;
 }
+textarea { resize: vertical; }
 input[type=checkbox] { margin-right: 8px; }
 .checkbox { display: flex; align-items: center; font-weight: 400; }
 .btn-primary {
@@ -76,11 +80,29 @@ input[type=checkbox] { margin-right: 8px; }
 .modal {
   position: fixed; inset: 0; background: rgba(0,0,0,0.4);
   display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 100;
+  overflow-y: auto;
 }
-.modal-card { background: #fff; border-radius: 12px; padding: 24px; width: 100%; max-width: 420px; max-height: 90vh; overflow-y: auto; }
-.modal-actions { display: flex; justify-content: space-between; align-items: center; margin-top: 20px; gap: 12px; }
-.row-between { display: flex; justify-content: space-between; align-items: center; }
+.modal-card { background: #fff; border-radius: 12px; padding: 24px; width: 100%; max-width: 420px; max-height: 90vh; overflow-y: auto; box-sizing: border-box; }
+.modal-card.wide { max-width: min(760px, 94vw); width: 100%; }
+.modal-actions { display: flex; justify-content: space-between; align-items: center; margin-top: 20px; gap: 12px; flex-wrap: wrap; }
+.row-between { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
-.table { width: 100%; border-collapse: collapse; font-size: 14px; }
-.table th, .table td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--border); }
-@media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 16px; }
+.table-wrap { width: 100%; max-width: 100%; overflow-x: auto; border-radius: 8px; min-width: 0; }
+.table { width: 100%; min-width: 640px; border-collapse: collapse; font-size: 14px; }
+.table th, .table td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--border); vertical-align: top; word-break: break-word; overflow-wrap: anywhere; }
+.table td.nowrap-cell { white-space: nowrap; }
+.table th { white-space: nowrap; }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 16px; flex-wrap: wrap; }
+.tab-btn {
+  background: none; border: none; padding: 10px 14px; font-size: 14px; font-weight: 600;
+  color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.tab-btn.active { color: var(--primary); border-bottom-color: var(--primary); }
+.filter-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 12px; }
+.filter-row label { margin: 0; min-width: 160px; flex: 1; }
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.stat-box { border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+.stat-box .num { font-size: 24px; font-weight: 700; }
+.stat-box .label { font-size: 12px; color: var(--muted); margin-top: 2px; }
+@media (max-width: 640px) { .grid2, .grid3 { grid-template-columns: 1fr; } }

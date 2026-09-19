@@ -35,11 +35,16 @@ CREATE TABLE IF NOT EXISTS domains (
   domain_suffix TEXT UNIQUE NOT NULL,
   ldap_urls TEXT NOT NULL,        -- JSON array of connection strings, e.g. ["ldaps://dc1:636","ldaps://dc2:636"]
   base_dn TEXT NOT NULL,
+  netbios_name TEXT,              -- optional, e.g. "CONTOSO" - enables DOMAIN\\sAMAccountName bind fallback
+  lookup_bind_dn TEXT,             -- optional - resolves login by the AD "mail" attribute (see ensureColumn note below)
+  lookup_bind_password_enc TEXT,
+  allowed_groups TEXT NOT NULL DEFAULT '["Domain Admins"]', -- JSON array of AD group names permitted to sign in
   tls_reject_unauthorized INTEGER NOT NULL DEFAULT 1,
   feature_unlock INTEGER NOT NULL DEFAULT 1,
   feature_reset INTEGER NOT NULL DEFAULT 1,
   feature_force_change INTEGER NOT NULL DEFAULT 1,
   audit_enabled INTEGER NOT NULL DEFAULT 1,
+  alert_config TEXT NOT NULL DEFAULT '{}', -- JSON: per-domain alert enable/trigger/recipient/SMTP-override settings
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -72,7 +77,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);
 }
 
 // ---- Lightweight migration support for databases created by earlier
-// versions of this app (single ldap_url + stored bind_dn/bind_password). ----
+// versions of this app. ----
 
 function columnExists(table, column) {
   return db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
@@ -88,6 +93,16 @@ function ensureColumn(table, column, definition) {
 try {
   ensureColumn('domains', 'ldap_urls', "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn('domains', 'audit_enabled', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn('domains', 'netbios_name', 'TEXT');
+  ensureColumn('domains', 'allowed_groups', "TEXT NOT NULL DEFAULT '[\"Domain Admins\"]'");
+  ensureColumn('domains', 'alert_config', "TEXT NOT NULL DEFAULT '{}'");
+  // Optional, narrowly-scoped account used ONLY to resolve "this email
+  // address -> this AD account" before authentication, when login by the
+  // real `mail` attribute is needed (as opposed to the UPN or a
+  // sAMAccountName-matches-local-part assumption). Never used for search,
+  // unlock, or password reset - those always run as the signed-in user.
+  ensureColumn('domains', 'lookup_bind_dn', 'TEXT');
+  ensureColumn('domains', 'lookup_bind_password_enc', 'TEXT');
 
   // If this is an upgrade from a version that had a single `ldap_url` column,
   // backfill ldap_urls from it so existing domains keep working.
@@ -112,7 +127,15 @@ try {
   const auditSetting = db.prepare("SELECT 1 FROM settings WHERE key = 'audit_logging_enabled'").get();
   if (!auditSetting) {
     db.prepare("INSERT INTO settings (key, value) VALUES ('audit_logging_enabled', '1')").run();
-    logger.info('default_settings_seeded');
+    logger.info('default_settings_seeded', { key: 'audit_logging_enabled' });
+  }
+  const alertSetting = db.prepare("SELECT 1 FROM settings WHERE key = 'alert_config'").get();
+  if (!alertSetting) {
+    // Alerts default to OFF globally (unlike audit logging) since they
+    // depend on SMTP being configured; nothing is sent until an admin
+    // opts in and fills in a mail server.
+    db.prepare("INSERT INTO settings (key, value) VALUES ('alert_config', '{}')").run();
+    logger.info('default_settings_seeded', { key: 'alert_config' });
   }
 } catch (err) {
   logger.error('settings_seed_failed', logger.errInfo(err));

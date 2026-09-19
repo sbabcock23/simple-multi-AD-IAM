@@ -83,9 +83,10 @@ if (adminCount === 0) {
   console.log(`[bootstrap] Created initial admin user '${user}'. CHANGE THIS PASSWORD IMMEDIATELY.`);
 }
 
+const authRateLimitMax = parseInt(process.env.AUTH_RATE_LIMIT_MAX, 10) || 100;
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 20,
+  max: authRateLimitMax,
   standardHeaders: true,
   legacyHeaders: false,
   // Prevent a missing/incorrect TRUST_PROXY setting from throwing and
@@ -123,6 +124,6 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  logger.info('server_listening', { port: PORT, logLevel: process.env.LOG_LEVEL || 'info' });
+  logger.info('server_listening', { port: PORT, logLevel: process.env.LOG_LEVEL || 'info', authRateLimitMax });
   console.log(`IAM self-service app listening on port ${PORT}`);
 });

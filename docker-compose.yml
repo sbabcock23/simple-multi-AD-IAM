@@ -12,6 +12,7 @@ services:
       COOKIE_SECURE: "false"
       TRUST_PROXY: ${TRUST_PROXY:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      AUTH_RATE_LIMIT_MAX: ${AUTH_RATE_LIMIT_MAX:-100}
     volumes:
       - iam-data:/app/data
     restart: unless-stopped

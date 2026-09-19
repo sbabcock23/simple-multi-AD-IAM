@@ -32,8 +32,10 @@ function requireUserAuth(req, res, next) {
   // The user's own AD credentials, cached only inside their signed, httpOnly
   // session cookie (encrypted at rest with ENCRYPTION_KEY) so every
   // directory operation can be performed as them rather than a stored
-  // service account.
-  req.user = { username: data.username, domainId: data.domainId, password };
+  // service account. `ldapBindDn` is the account's actual DN, resolved once
+  // at login time (regardless of whether they typed their UPN, email, or
+  // sAMAccountName) - using it for every later bind is always reliable.
+  req.user = { username: data.username, domainId: data.domainId, password, ldapBindDn: data.bindDn };
   next();
 }
 

@@ -15,7 +15,6 @@
       <span id="adminLabel"></span>
       <button id="adminLogoutBtn" class="btn-link">Log out</button>
     </div>
-    <a href="/" class="btn-link admin-link">User portal</a>
   </div>
 </div>
 
@@ -29,23 +28,81 @@
   </form>
 </div>
 
-<div id="adminAppView" class="app-view hidden">
+<div id="adminAppView" class="app-view admin-view hidden">
 
   <div class="card">
     <div class="row-between">
       <h2>Domains</h2>
       <button id="newDomainBtn" class="btn-primary">Add domain</button>
     </div>
-    <p class="muted">Each domain maps to the part after @ in a user's login (e.g. contoso.com). Users authenticate with their own AD credentials — there is no stored service account.</p>
+    <p class="muted">Each domain maps to the part after @ in a user's login (e.g. contoso.com). Users authenticate with their own AD credentials — there is no stored service account for directory operations.</p>
     <div id="domainsTable"></div>
   </div>
 
   <div class="card">
-    <h2>Audit settings</h2>
-    <p class="muted">Global switch controls whether any logging happens. Each domain also has its own on/off toggle (in its edit form) which only matters while logging is globally on.</p>
+    <h2>Global settings</h2>
+
+    <h4>Audit logging</h4>
     <label class="checkbox"><input type="checkbox" id="globalAuditEnabled"/> Enable audit logging (global)</label>
-    <button id="saveSettingsBtn" class="btn-primary" style="margin-top:8px;">Save</button>
-    <span id="settingsSaved" class="success hidden" style="margin-left:10px;">Saved.</span>
+    <p class="muted" style="margin-top:0;">Each domain also has its own audit toggle in its edit form, which only matters while this is on.</p>
+
+    <h4>Email alerts</h4>
+    <p class="muted" style="margin-top:0;">Sends an email on failed logins and on account unlock / password reset actions. Any domain can override the recipients and/or SMTP server in its own edit form, or narrow which of these triggers apply to it.</p>
+    <label class="checkbox"><input type="checkbox" id="globalAlertsEnabled"/> Enable email alerts (global)</label>
+    <label class="checkbox"><input type="checkbox" id="gAlertLoginFailure" checked/> Alert on failed logins</label>
+    <label class="checkbox"><input type="checkbox" id="gAlertAccountAction" checked/> Alert on account actions (unlock / password reset)</label>
+    <label>Default alert recipients (comma-separated)
+      <input type="text" id="gAlertRecipients" placeholder="security@contoso.com, helpdesk@contoso.com"/>
+    </label>
+    <div class="grid2">
+      <label>SMTP host <input id="gSmtpHost" placeholder="smtp.contoso.com"/></label>
+      <label>SMTP port <input id="gSmtpPort" placeholder="587"/></label>
+      <label>From address <input id="gSmtpFrom" placeholder="iam-alerts@contoso.com"/></label>
+      <label>SMTP username (optional) <input id="gSmtpUsername"/></label>
+      <label>SMTP password <input type="password" id="gSmtpPassword" placeholder="Leave blank to keep existing"/></label>
+    </div>
+    <label class="checkbox"><input type="checkbox" id="gSmtpSecure"/> Use implicit TLS/SSL (usually port 465)</label>
+    <label class="checkbox"><input type="checkbox" id="gSmtpTlsVerify" checked/> Verify SMTP TLS certificate</label>
+    <div class="modal-actions" style="justify-content:flex-start; gap:12px;">
+      <button id="saveSettingsBtn" class="btn-primary">Save settings</button>
+      <button id="testGlobalEmailBtn" class="btn-secondary" type="button">Send test email</button>
+      <span id="settingsSaved" class="success hidden">Saved.</span>
+    </div>
+    <div id="globalEmailTestResult" class="hidden" style="margin-top:8px; font-size:13px;"></div>
+  </div>
+
+  <div class="card">
+    <div class="row-between">
+      <h2>Email templates</h2>
+      <span id="templateSourceBadge" class="badge badge-ok hidden"></span>
+    </div>
+    <p class="muted">Customize the subject and body of alert emails. A change saved here always takes priority. Otherwise, if a file exists in the template folder on disk (<code id="templatesDirLabel">the templates directory</code>), that's used. Falls back to a built-in default if neither is set.</p>
+    <div class="tabs" id="templateTabs"></div>
+    <div id="templateEditor"></div>
+  </div>
+
+  <div class="card">
+    <div class="row-between">
+      <h2>Reports</h2>
+      <button id="downloadReportBtn" class="btn-secondary">Download CSV</button>
+    </div>
+    <div class="filter-row">
+      <label>Domain
+        <select id="reportDomainFilter">
+          <option value="">All domains</option>
+          <option value="unmatched">Unmatched domain attempts</option>
+        </select>
+      </label>
+      <label>From <input type="date" id="reportFrom"/></label>
+      <label>To <input type="date" id="reportTo"/></label>
+      <label id="reportEventTypeWrap" class="hidden">Event type
+        <select id="reportEventTypeFilter"><option value="">All</option></select>
+      </label>
+      <label>&nbsp;<button id="refreshReportsBtn" class="btn-secondary" style="width:100%; margin-top:6px;">Refresh</button></label>
+    </div>
+    <div class="stat-grid" id="reportStats"></div>
+    <div class="tabs" id="reportTabs"></div>
+    <div id="reportTable" style="overflow-x:auto;"></div>
   </div>
 
   <div class="card">
@@ -112,15 +169,58 @@
     <label class="checkbox"><input type="checkbox" id="dEnabled" checked/> Domain enabled</label>
     <label class="checkbox"><input type="checkbox" id="dAuditEnabled" checked/> Enable audit logging for this domain</label>
 
+    <h4>Allowed login groups</h4>
+    <p class="muted" style="margin-top:0;">Only members of one of these AD groups (direct or nested) may sign in to the portal. Defaults to Domain Admins.</p>
+    <div id="dGroupsList"></div>
+    <button type="button" id="addGroupBtn" class="btn-link">+ Add another group</button>
+
+    <h4>NetBIOS domain name (optional)</h4>
+    <p class="muted" style="margin-top:0;">AD's simple bind only recognizes a userPrincipalName or a DN directly - not an arbitrary email address. If this domain's users' email differs from their UPN, set the NetBIOS name (e.g. <code>CONTOSO</code>) here to enable a fallback sign-in attempt as <code>CONTOSO\&#8203;sAMAccountName</code>. Leave blank if email already equals UPN, which is true for most environments.</p>
+    <label>NetBIOS domain name <input id="dNetbiosName" placeholder="CONTOSO"/></label>
+
+    <h4>Email-attribute lookup account (optional)</h4>
+    <p class="muted" style="margin-top:0;">Only needed when users' email address (the AD <code>mail</code> attribute) doesn't share a local part with their sAMAccountName or UPN - e.g. AD domain <code>company.local</code>, UPN <code>user@company.local</code>, email <code>user@company.com</code>. This account is used <strong>only</strong> to look up "which AD account has this email address" before sign-in; it is never used for searches, unlocks, or password resets afterward. A low-privilege domain account with default read access is normally sufficient - no special delegation required.</p>
+    <div class="grid2">
+      <label>Lookup account bind DN <input id="dLookupDn" placeholder="CN=svc-lookup,OU=Service Accounts,DC=company,DC=local"/></label>
+      <label>Lookup account password <input type="password" id="dLookupPassword" placeholder="Leave blank to keep existing"/></label>
+    </div>
+    <div class="grid2">
+      <label>Test email address (optional) <input id="dLookupTestEmail" placeholder="jdoe@company.com"/></label>
+      <label>&nbsp;<button type="button" id="testLookupBtn" class="btn-secondary" style="width:100%; margin-top:6px;">Test lookup account</button></label>
+    </div>
+    <div id="lookupTestResult" class="hidden" style="margin-top:4px; margin-bottom:12px; font-size:13px;"></div>
+
     <h4>Features shown to end users for this domain</h4>
     <label class="checkbox"><input type="checkbox" id="dFeatUnlock" checked/> Allow account unlock</label>
     <label class="checkbox"><input type="checkbox" id="dFeatReset" checked/> Allow password reset</label>
     <label class="checkbox"><input type="checkbox" id="dFeatForce" checked/> Allow "force change at next logon"</label>
 
+    <h4>Email alerts override (optional)</h4>
+    <p class="muted" style="margin-top:0;">Alerts still require email alerts to be enabled globally - these settings narrow or redirect alerts for this domain specifically.</p>
+    <label class="checkbox"><input type="checkbox" id="dAlertsEnabled" checked/> Enable email alerts for this domain</label>
+    <label class="checkbox"><input type="checkbox" id="dAlertLoginFailure" checked/> Alert on failed logins</label>
+    <label class="checkbox"><input type="checkbox" id="dAlertAccountAction" checked/> Alert on account actions (unlock / password reset)</label>
+    <label>Recipients override (comma-separated)
+      <input type="text" id="dAlertRecipients" placeholder="Leave blank to inherit the global recipient list"/>
+    </label>
+    <label class="checkbox"><input type="checkbox" id="dSmtpOverride"/> Use a different SMTP server for this domain's alerts</label>
+    <div class="grid2">
+      <label>SMTP host <input id="dSmtpHost" placeholder="smtp.contoso.com"/></label>
+      <label>SMTP port <input id="dSmtpPort" placeholder="587"/></label>
+      <label>From address <input id="dSmtpFrom" placeholder="iam-alerts@contoso.com"/></label>
+      <label>SMTP username (optional) <input id="dSmtpUsername"/></label>
+      <label>SMTP password <input type="password" id="dSmtpPassword" placeholder="Leave blank to keep existing"/></label>
+    </div>
+    <label class="checkbox"><input type="checkbox" id="dSmtpSecure"/> Use implicit TLS/SSL (usually port 465)</label>
+    <label class="checkbox"><input type="checkbox" id="dSmtpTlsVerify" checked/> Verify SMTP TLS certificate</label>
+
     <div id="domainTestResult" class="hidden" style="margin-top:12px; font-size:13px;"></div>
     <div id="domainError" class="error hidden"></div>
     <div class="modal-actions">
-      <button id="testDomainBtn" class="btn-secondary" type="button">Test connection</button>
+      <div>
+        <button id="testDomainBtn" class="btn-secondary" type="button">Test LDAP</button>
+        <button id="testDomainEmailBtn" class="btn-secondary" type="button">Test email</button>
+      </div>
       <div>
         <button id="cancelDomain" class="btn-link" type="button">Cancel</button>
         <button id="saveDomain" class="btn-primary" type="button">Save</button>

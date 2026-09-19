@@ -12,10 +12,17 @@ single Docker container.
   one or more LDAP server URLs, the search base DN, and which self-service
   **features** (unlock, reset password, force change at next logon) and
   **audit logging** are enabled for that domain.
-- **End users** (e.g. helpdesk/support staff) log in at `/` with
-  `username@domain.com`. The part after `@` is matched against a configured
-  domain's suffix, and the app authenticates the credentials directly
-  against that domain's AD via an LDAP bind.
+- **End users** (e.g. helpdesk/support staff) log in at `/` with an
+  identifier plus password. The part after the last `@` is matched against
+  a configured domain's suffix to route the login to the right AD; users
+  can then authenticate with their **userPrincipalName or their email
+  address** (see "Login identity" below for how that works and its one
+  real-world limitation).
+- **Only members of an allowed AD group can sign in.** Each domain has a
+  configurable list of AD group names (by default just `Domain Admins`);
+  a user must be a member of at least one of them — directly or nested
+  inside another group — to use the portal at all. See "Group-based login
+  authorization" below.
 - **There is no stored service account.** Every directory operation —
   search, unlock, or password reset — is performed using the signed-in
   user's *own* AD credentials, cached only inside their encrypted, signed,
@@ -29,6 +36,62 @@ single Docker container.
   also re-checks the flag before executing, so it's not just a UI hide.
 - **Multiple LDAP servers per domain** are supported for failover (e.g. two
   domain controllers) — add as many as you like in the domain form.
+
+## Group-based login authorization
+
+Each domain has an **Allowed groups** list (Admin → edit domain), by
+default containing just `Domain Admins`. To sign in, a user must have
+valid credentials **and** be a member — directly, or nested inside another
+group any number of levels deep — of at least one group on that list. This
+is enforced with Active Directory's own recursive membership operator
+(`LDAP_MATCHING_RULE_IN_CHAIN`), so e.g. a "Help Desk" group that is itself
+a member of "Domain Admins" correctly grants access to everyone in Help
+Desk, not just direct members of Domain Admins.
+
+Groups are matched by **name** (AD `cn`), not DN, so they're portable
+across domains with the same group-naming convention. If a domain's
+allowed-groups list is ever left empty, or none of the named groups can be
+found in that domain, login is **denied for everyone** on that domain
+(fail closed) rather than silently allowing unrestricted access.
+
+The reason a login was rejected (wrong password vs. account not in an
+allowed group vs. domain unreachable) is always logged server-side
+(`docker compose logs`) with full detail, but the message shown to the
+person signing in is deliberately generic either way, so as not to reveal
+which part failed to someone who might be probing for valid accounts.
+
+## Login identity
+
+Users can sign in with either their **userPrincipalName** (e.g.
+`jdoe@corp.local`) or their **email address** (the AD `mail` attribute,
+e.g. `jdoe@contoso.com`), even when those differ — which is common when an
+org's internal UPN suffix doesn't match its public email domain. Here's
+how that works, and its one real limitation:
+
+- Active Directory's simple bind natively accepts a full DN, a UPN
+  (`user@upnsuffix`), or `NETBIOS\sAMAccountName` — but **not** an
+  arbitrary `mail` value directly.
+- On login, the app first tries binding with exactly what was typed (this
+  succeeds immediately whenever it matches the real UPN, or whenever an
+  org's UPN suffix already matches its email domain — the recommended AD
+  configuration for exactly this reason).
+- If that fails **and** the domain has a **NetBIOS domain name** configured
+  (Admin → edit domain, e.g. `CONTOSO`), it retries using
+  `NETBIOS\<the part before @>` as the bind identity — which authenticates
+  by `sAMAccountName` instead, sidestepping the UPN-suffix mismatch
+  entirely. This is what makes logging in with an email address work even
+  when the UPN suffix is different, as long as the email's local part
+  matches the account's `sAMAccountName` (the standard case).
+- Whichever attempt succeeds, the account's real DN is resolved once at
+  login and used for every subsequent LDAP operation in that session —
+  what was typed doesn't matter after that point.
+- **Limitation:** if an account's email local-part genuinely differs from
+  its `sAMAccountName` *and* its UPN differs from the typed email, there's
+  no way to resolve that without a directory search performed before the
+  person has proven who they are — which would require a stored lookup
+  credential, something this app deliberately doesn't keep (see "There is
+  no stored service account" above). In that specific edge case, ask that
+  person to sign in with their UPN instead.
 
 ## Audit logging
 
@@ -76,6 +139,14 @@ For each domain you add:
    failover — use **Test connection** in the admin UI to verify each server
    is reachable before saving. This is a network reachability check only
    (no credentials involved), since the app has no stored login to test with.
+6. Set the domain's **Allowed groups** (default `Domain Admins`) to whichever
+   AD group(s) should be permitted to sign in — typically your helpdesk
+   team's own group, so day-to-day support staff don't need to be in
+   Domain Admins itself. See "Group-based login authorization" below.
+7. If you expect people to sign in with their **email address** rather than
+   their UPN, and your UPN suffix doesn't match your email domain, also set
+   the domain's **NetBIOS domain name** (e.g. `CONTOSO`). See "Login
+   identity" below.
 
 ## Running with Docker Compose
 
@@ -117,6 +188,7 @@ docker run -d \
 | `ENCRYPTION_KEY` | Encrypts the end user's own password inside their session cookie (needed to perform directory operations as them) and, for older deployments, any legacy stored bind password. Set a long random value. |
 | `ADMIN_BOOTSTRAP_USER` / `ADMIN_BOOTSTRAP_PASSWORD` | Creates the first local admin account on first run only. Change the password after first login. |
 | `COOKIE_SECURE` | Set to `true` once the app is served over HTTPS, so session cookies are marked `Secure`. |
+| `AUTH_RATE_LIMIT_MAX` | Max login attempts per client IP within a 15-minute window, shared across the admin and user login endpoints. Defaults to `100` if unset. |
 | `TRUST_PROXY` | Number of reverse proxy hops in front of this app (e.g. `1` for a single nginx/Traefik/PaaS router). Leave unset if the app is reached directly. See "Running behind a reverse proxy" below. |
 | `LOG_LEVEL` | Console log verbosity: `error`, `warn`, `info` (default), `debug`, or `silent`. See "Logging" below. |
 | `PORT` | Port the app listens on (default `3000`). |

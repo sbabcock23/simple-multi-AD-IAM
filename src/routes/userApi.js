@@ -5,6 +5,7 @@ const domainsModule = require('../domains');
 const ldap = require('../ldap');
 const audit = require('../audit');
 const logger = require('../logger');
+const mailer = require('../mailer');
 
 function getDomainForReq(req) {
   const domain = domainsModule.getById(req.user.domainId);
@@ -29,16 +30,14 @@ router.get('/search', async (req, res) => {
   try {
     domain = getDomainForReq(req);
     if (q.length < 2) return res.json([]);
-    const results = await ldap.searchUsers(domain, req.user.username, req.user.password, q);
+    const results = await ldap.searchUsers(domain, req.user.ldapBindDn, req.user.password, q);
     audit.logEvent(req, {
       domainId: domain.id, domainLabel: domain.name, eventType: 'search',
       actorUsername: req.user.username, targetIdentifier: q, success: true,
     });
     res.json(results);
   } catch (e) {
-    logger.error('search_failed', {
-      requestId: req.id, actor: req.user.username, query: q, ...logger.errInfo(e),
-    });
+    logger.error('search_failed', { requestId: req.id, actor: req.user.username, query: q, ...logger.errInfo(e) });
     audit.logEvent(req, {
       domainId: domain ? domain.id : req.user.domainId, domainLabel: domain ? domain.name : null,
       eventType: 'search', actorUsername: req.user.username, targetIdentifier: q,
@@ -51,13 +50,11 @@ router.get('/search', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const domain = getDomainForReq(req);
-    const user = await ldap.getUserByIdentifier(domain, req.user.username, req.user.password, req.params.id);
+    const user = await ldap.getUserByIdentifier(domain, req.user.ldapBindDn, req.user.password, req.params.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
     res.json(user);
   } catch (e) {
-    logger.error('lookup_failed', {
-      requestId: req.id, actor: req.user.username, target: req.params.id, ...logger.errInfo(e),
-    });
+    logger.error('lookup_failed', { requestId: req.id, actor: req.user.username, target: req.params.id, ...logger.errInfo(e) });
     res.status(e.status || 500).json({ error: e.message, requestId: req.id });
   }
 });
@@ -69,13 +66,20 @@ router.post('/:id/unlock', async (req, res) => {
     if (!domain.feature_unlock) {
       throw Object.assign(new Error('Account unlock is disabled for this domain'), { status: 403 });
     }
-    const user = await ldap.getUserByIdentifier(domain, req.user.username, req.user.password, req.params.id);
+    const user = await ldap.getUserByIdentifier(domain, req.user.ldapBindDn, req.user.password, req.params.id);
     if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
-    await ldap.unlockUser(domain, req.user.username, req.user.password, user.dn);
+    await ldap.unlockUser(domain, req.user.ldapBindDn, req.user.password, user.dn);
     logger.info('unlock_success', { requestId: req.id, actor: req.user.username, target: req.params.id, domain: domain.name });
     audit.logEvent(req, {
       domainId: domain.id, domainLabel: domain.name, eventType: 'unlock',
       actorUsername: req.user.username, targetIdentifier: req.params.id, success: true,
+    });
+    mailer.sendAlert({
+      domainRow: domain, category: 'account_action',
+      ...mailer.accountActionEmail({
+        actor: req.user.username, target: req.params.id, domainName: domain.name,
+        action: 'unlock', success: true, ip: req.ip, time: new Date().toISOString(),
+      }),
     });
     res.json({ ok: true });
   } catch (e) {
@@ -87,6 +91,13 @@ router.post('/:id/unlock', async (req, res) => {
       domainId: domain ? domain.id : req.user.domainId, domainLabel: domain ? domain.name : null,
       eventType: 'unlock', actorUsername: req.user.username, targetIdentifier: req.params.id,
       success: false, detail: e.message,
+    });
+    mailer.sendAlert({
+      domainRow: domain || null, category: 'account_action',
+      ...mailer.accountActionEmail({
+        actor: req.user.username, target: req.params.id, domainName: domain ? domain.name : null,
+        action: 'unlock', success: false, detail: e.message, ip: req.ip, time: new Date().toISOString(),
+      }),
     });
     res.status(e.status || 500).json({ error: e.message, requestId: req.id });
   }
@@ -103,13 +114,20 @@ router.post('/:id/reset-password', async (req, res) => {
     if (!newPassword || newPassword.length < 8) {
       throw Object.assign(new Error('Password must be at least 8 characters'), { status: 400 });
     }
-    const user = await ldap.getUserByIdentifier(domain, req.user.username, req.user.password, req.params.id);
+    const user = await ldap.getUserByIdentifier(domain, req.user.ldapBindDn, req.user.password, req.params.id);
     if (!user) throw Object.assign(new Error('User not found'), { status: 404 });
-    await ldap.resetPassword(domain, req.user.username, req.user.password, user.dn, newPassword, !!forceChange && !!domain.feature_force_change);
+    await ldap.resetPassword(domain, req.user.ldapBindDn, req.user.password, user.dn, newPassword, !!forceChange && !!domain.feature_force_change);
     logger.info('reset_password_success', { requestId: req.id, actor: req.user.username, target: req.params.id, domain: domain.name });
     audit.logEvent(req, {
       domainId: domain.id, domainLabel: domain.name, eventType: 'reset_password',
       actorUsername: req.user.username, targetIdentifier: req.params.id, success: true,
+    });
+    mailer.sendAlert({
+      domainRow: domain, category: 'account_action',
+      ...mailer.accountActionEmail({
+        actor: req.user.username, target: req.params.id, domainName: domain.name,
+        action: 'reset_password', success: true, ip: req.ip, time: new Date().toISOString(),
+      }),
     });
     res.json({ ok: true });
   } catch (e) {
@@ -121,6 +139,13 @@ router.post('/:id/reset-password', async (req, res) => {
       domainId: domain ? domain.id : req.user.domainId, domainLabel: domain ? domain.name : null,
       eventType: 'reset_password', actorUsername: req.user.username, targetIdentifier: req.params.id,
       success: false, detail: e.message,
+    });
+    mailer.sendAlert({
+      domainRow: domain || null, category: 'account_action',
+      ...mailer.accountActionEmail({
+        actor: req.user.username, target: req.params.id, domainName: domain ? domain.name : null,
+        action: 'reset_password', success: false, detail: e.message, ip: req.ip, time: new Date().toISOString(),
+      }),
     });
     res.status(e.status || 500).json({ error: e.message, requestId: req.id });
   }
