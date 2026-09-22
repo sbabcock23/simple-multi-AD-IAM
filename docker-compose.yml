@@ -3,7 +3,8 @@ services:
     build: .
     image: iam-self-service:latest
     ports:
-      - "3000:3000"
+      - "3000:3000"   # user portal
+      - "3001:3001"   # admin portal - restrict/firewall this port separately from the user portal
     environment:
       JWT_SECRET: ${JWT_SECRET:-please-change-this-jwt-secret}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-please-change-this-encryption-key}
@@ -13,6 +14,8 @@ services:
       TRUST_PROXY: ${TRUST_PROXY:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       AUTH_RATE_LIMIT_MAX: ${AUTH_RATE_LIMIT_MAX:-100}
+      PORT: ${PORT:-3000}
+      ADMIN_PORT: ${ADMIN_PORT:-3001}
     volumes:
       - iam-data:/app/data
     restart: unless-stopped
