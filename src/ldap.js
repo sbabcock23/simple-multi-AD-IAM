@@ -69,10 +69,21 @@ async function withUserBind(domainConfig, bindIdentity, password, fn) {
   }
 }
 
+function sanitizeSearchOptions(options) {
+  const safeOptions = { ...(options || {}) };
+  if (typeof safeOptions.filter === 'string') {
+    safeOptions.filter = (typeof ldap.escape === 'function')
+      ? ldap.escape(safeOptions.filter)
+      : escapeFilter(safeOptions.filter);
+  }
+  return safeOptions;
+}
+
 function searchAsync(client, base, options) {
   return new Promise((resolve, reject) => {
     const results = [];
-    client.search(base, options, (err, res) => {
+    const safeOptions = sanitizeSearchOptions(options);
+    client.search(base, safeOptions, (err, res) => {
       if (err) return reject(err);
       res.on('searchEntry', (entry) => {
         results.push(entryToObject(entry));
