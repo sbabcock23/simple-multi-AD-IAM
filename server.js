@@ -58,7 +58,7 @@ function createBaseApp(name) {
   const app = express();
   app.disable('x-powered-by');
   applyTrustProxy(app);
-  app.use(helmet({ contentSecurityPolicy: false }));
+  app.use(helmet());
   app.use(express.json());
   app.use(cookieParser());
 
