@@ -25,6 +25,7 @@ function parseRow(row) {
     ldap_urls: safeParseArray(row.ldap_urls, []),
     allowed_groups: safeParseArray(row.allowed_groups, ['Domain Admins']),
     alert_config: safeParseObject(row.alert_config),
+    duo_config: safeParseObject(row.duo_config),
   };
 }
 

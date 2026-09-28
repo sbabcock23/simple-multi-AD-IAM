@@ -5,6 +5,7 @@ const domainsModule = require('../domains');
 const ldap = require('../ldap');
 const logger = require('../logger');
 const mailer = require('../mailer');
+const duo = require('../duo');
 const templates = require('../templates');
 const cryptoHelper = require('../crypto');
 const { hashPassword } = require('../auth');
@@ -34,6 +35,7 @@ function domainPublic(row) {
     ...rawAlert,
     smtp: { ...mailer.DOMAIN_DEFAULTS.smtp, ...(rawAlert.smtp || {}) },
   };
+  const mergedDuo = { ...duo.DOMAIN_DEFAULTS, ...parseJsonObject(row.duo_config) };
   return {
     id: row.id,
     name: row.name,
@@ -50,6 +52,7 @@ function domainPublic(row) {
     feature_force_change: !!row.feature_force_change,
     audit_enabled: !!row.audit_enabled,
     alert_config: { ...mergedAlert, smtp: mailer.sanitizeSmtp(mergedAlert.smtp) },
+    duo_config: duo.sanitize(mergedDuo),
     enabled: !!row.enabled,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -90,6 +93,21 @@ function buildDomainAlertConfig(input, existingJson) {
   return merged;
 }
 
+// Builds the JSON to store in domains.duo_config, merging the submitted
+// partial config over whatever was already stored, and only re-encrypting
+// the Duo client secret if a new one was actually typed (an empty/omitted
+// field means "leave the existing one alone").
+function buildDomainDuoConfig(input, existingJson) {
+  const existing = parseJsonObject(existingJson);
+  const merged = { ...duo.DOMAIN_DEFAULTS, ...existing, ...(input || {}) };
+  const providedSecret = input && input.clientSecret;
+  merged.clientSecretEnc = providedSecret
+    ? cryptoHelper.encrypt(providedSecret)
+    : (existing.clientSecretEnc || '');
+  delete merged.clientSecret;
+  return merged;
+}
+
 // ---------- Domains ----------
 
 router.get('/domains', (req, res) => {
@@ -99,7 +117,7 @@ router.get('/domains', (req, res) => {
 
 router.post('/domains', (req, res) => {
   const {
-    name, domain_suffix, ldap_urls, base_dn, netbios_name, allowed_groups, alert_config,
+    name, domain_suffix, ldap_urls, base_dn, netbios_name, allowed_groups, alert_config, duo_config,
     lookup_bind_dn, lookup_bind_password,
     tls_reject_unauthorized = true, feature_unlock = true, feature_reset = true,
     feature_force_change = true, audit_enabled = true, enabled = true,
@@ -121,17 +139,18 @@ router.post('/domains', (req, res) => {
   const lookupPasswordEnc = lookupDn && lookup_bind_password ? cryptoHelper.encrypt(lookup_bind_password) : null;
 
   const alertCfg = buildDomainAlertConfig(alert_config, null);
+  const duoCfg = buildDomainDuoConfig(duo_config, null);
 
   const now = new Date().toISOString();
   try {
     const info = db.prepare(`INSERT INTO domains
       (name, domain_suffix, ldap_urls, base_dn, netbios_name, lookup_bind_dn, lookup_bind_password_enc, allowed_groups, tls_reject_unauthorized,
-       feature_unlock, feature_reset, feature_force_change, audit_enabled, alert_config, enabled, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+       feature_unlock, feature_reset, feature_force_change, audit_enabled, alert_config, duo_config, enabled, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       name, domain_suffix.toLowerCase(), JSON.stringify(urls), base_dn, netbios_name || null,
       lookupDn || null, lookupPasswordEnc, JSON.stringify(groups),
       tls_reject_unauthorized ? 1 : 0, feature_unlock ? 1 : 0, feature_reset ? 1 : 0,
-      feature_force_change ? 1 : 0, audit_enabled ? 1 : 0, JSON.stringify(alertCfg), enabled ? 1 : 0, now, now
+      feature_force_change ? 1 : 0, audit_enabled ? 1 : 0, JSON.stringify(alertCfg), JSON.stringify(duoCfg), enabled ? 1 : 0, now, now
     );
     logger.info('domain_created', { requestId: req.id, admin: req.admin.username, domain: name, suffix: domain_suffix });
     const row = db.prepare('SELECT * FROM domains WHERE id = ?').get(info.lastInsertRowid);
@@ -169,6 +188,11 @@ router.put('/domains/:id', (req, res) => {
     alertJson = JSON.stringify(buildDomainAlertConfig(b.alert_config, existing.alert_config));
   }
 
+  let duoJson = existing.duo_config;
+  if (b.duo_config !== undefined) {
+    duoJson = JSON.stringify(buildDomainDuoConfig(b.duo_config, existing.duo_config));
+  }
+
   const netbiosValue = b.netbios_name !== undefined ? (b.netbios_name || null) : existing.netbios_name;
 
   // Lookup account: an empty/omitted DN means "no lookup account" (clears
@@ -199,7 +223,7 @@ router.put('/domains/:id', (req, res) => {
     db.prepare(`UPDATE domains SET
         name=?, domain_suffix=?, ldap_urls=?, base_dn=?, netbios_name=?, lookup_bind_dn=?, lookup_bind_password_enc=?, allowed_groups=?,
         tls_reject_unauthorized=?, feature_unlock=?, feature_reset=?, feature_force_change=?,
-        audit_enabled=?, alert_config=?, enabled=?, updated_at=?
+        audit_enabled=?, alert_config=?, duo_config=?, enabled=?, updated_at=?
       WHERE id=?`).run(
       b.name ?? existing.name,
       (b.domain_suffix ?? existing.domain_suffix).toLowerCase(),
@@ -215,6 +239,7 @@ router.put('/domains/:id', (req, res) => {
       b.feature_force_change !== undefined ? (b.feature_force_change ? 1 : 0) : existing.feature_force_change,
       b.audit_enabled !== undefined ? (b.audit_enabled ? 1 : 0) : existing.audit_enabled,
       alertJson,
+      duoJson,
       b.enabled !== undefined ? (b.enabled ? 1 : 0) : existing.enabled,
       now,
       req.params.id
@@ -390,6 +415,62 @@ router.post('/alerts/test', async (req, res) => {
   } catch (e) {
     logger.warn('test_email_failed', { requestId: req.id, admin: req.admin.username, ...logger.errInfo(e) });
     res.status(400).json({ error: e.message });
+  }
+});
+
+// ---------- Global Cisco Duo MFA settings ----------
+
+router.get('/duo', (req, res) => {
+  const cfg = duo.getGlobalConfig();
+  res.json(duo.sanitize(cfg));
+});
+
+router.put('/duo', (req, res) => {
+  const b = req.body || {};
+  const existing = duo.getGlobalConfig();
+  if (b.mode !== undefined && !['enforced', 'disabled'].includes(b.mode)) {
+    return res.status(400).json({ error: 'Mode must be "enforced" or "disabled"' });
+  }
+  const clientSecretEnc = b.clientSecret ? cryptoHelper.encrypt(b.clientSecret) : existing.clientSecretEnc;
+  const newCfg = {
+    mode: b.mode ?? existing.mode,
+    clientId: b.clientId !== undefined ? b.clientId.trim() : existing.clientId,
+    apiHostname: b.apiHostname !== undefined ? b.apiHostname.trim() : existing.apiHostname,
+    redirectUrl: b.redirectUrl !== undefined ? b.redirectUrl.trim() : existing.redirectUrl,
+    clientSecretEnc,
+  };
+  if (newCfg.mode === 'enforced' && !duo.isConfigured({ ...newCfg, clientSecret: clientSecretEnc ? 'x' : '' })) {
+    return res.status(400).json({ error: 'Client ID, client secret, API hostname, and redirect URL are all required to enforce MFA' });
+  }
+  duo.setGlobalConfig(newCfg);
+  logger.info('global_duo_settings_updated', { requestId: req.id, admin: req.admin.username, mode: newCfg.mode });
+  res.json(duo.sanitize(newCfg));
+});
+
+router.post('/duo/test', async (req, res) => {
+  const b = req.body || {};
+  try {
+    let effective;
+    if (b.clientId || b.apiHostname || b.redirectUrl || b.clientSecret) {
+      const existing = duo.getGlobalConfig();
+      effective = {
+        clientId: b.clientId !== undefined ? b.clientId.trim() : existing.clientId,
+        apiHostname: b.apiHostname !== undefined ? b.apiHostname.trim() : existing.apiHostname,
+        redirectUrl: b.redirectUrl !== undefined ? b.redirectUrl.trim() : existing.redirectUrl,
+        clientSecret: b.clientSecret || (existing.clientSecretEnc ? cryptoHelper.decrypt(existing.clientSecretEnc) : ''),
+      };
+    } else {
+      effective = duo.resolveEffective(null);
+    }
+    if (!duo.isConfigured(effective)) {
+      return res.status(400).json({ error: 'Client ID, client secret, API hostname, and redirect URL are all required to test' });
+    }
+    await duo.healthCheck(effective);
+    logger.info('duo_test_succeeded', { requestId: req.id, admin: req.admin.username });
+    res.json({ ok: true, message: 'Duo health check succeeded - the API hostname and credentials are valid.' });
+  } catch (e) {
+    logger.warn('duo_test_failed', { requestId: req.id, admin: req.admin.username, ...logger.errInfo(e) });
+    res.status(400).json({ ok: false, error: e.message });
   }
 });
 
@@ -599,6 +680,22 @@ const REPORT_BUILDERS = {
             WHERE target_identifier IS NOT NULL AND event_type IN ('unlock','reset_password') ${where}
             GROUP BY domain_label, target_identifier
             ORDER BY "Total actions" DESC`,
+      params,
+    };
+  },
+  'mfa-activity': (query) => {
+    const { where, params } = reportFilters(query);
+    return {
+      sql: `SELECT domain_label AS "Domain", actor_username AS "User",
+              SUM(CASE WHEN event_type='mfa_challenge' THEN 1 ELSE 0 END) AS "Challenges sent",
+              SUM(CASE WHEN event_type='login' AND success=1 THEN 1 ELSE 0 END) AS "Completed logins",
+              SUM(CASE WHEN event_type='login' AND success=0 AND detail='MFA verification failed' THEN 1 ELSE 0 END) AS "MFA failures",
+              MAX(created_at) AS "Last activity"
+            FROM audit_log
+            WHERE event_type IN ('mfa_challenge','login') ${where}
+            GROUP BY domain_label, actor_username
+            HAVING "Challenges sent" > 0 OR "MFA failures" > 0
+            ORDER BY "Last activity" DESC`,
       params,
     };
   },

@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS domains (
   netbios_name TEXT,              -- optional, e.g. "CONTOSO" - enables DOMAIN\\sAMAccountName bind fallback
   lookup_bind_dn TEXT,             -- optional - resolves login by the AD "mail" attribute (see ensureColumn note below)
   lookup_bind_password_enc TEXT,
+  duo_config TEXT NOT NULL DEFAULT '{}',
   allowed_groups TEXT NOT NULL DEFAULT '["Domain Admins"]', -- JSON array of AD group names permitted to sign in
   tls_reject_unauthorized INTEGER NOT NULL DEFAULT 1,
   feature_unlock INTEGER NOT NULL DEFAULT 1,
@@ -60,7 +61,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
   created_at TEXT NOT NULL,
   domain_id INTEGER,             -- NULL when the login's domain suffix didn't match any configured domain
   domain_label TEXT,             -- denormalized domain name, kept even if the domain is later deleted
-  event_type TEXT NOT NULL,      -- 'login' | 'logout' | 'search' | 'unlock' | 'reset_password'
+  event_type TEXT NOT NULL,      -- 'login' | 'logout' | 'search' | 'unlock' | 'reset_password' | 'mfa_challenge'
   actor_username TEXT NOT NULL,  -- the signed-in end user who performed the action
   target_identifier TEXT,        -- the AD account/query acted upon, where applicable
   success INTEGER NOT NULL,
@@ -103,6 +104,9 @@ try {
   // unlock, or password reset - those always run as the signed-in user.
   ensureColumn('domains', 'lookup_bind_dn', 'TEXT');
   ensureColumn('domains', 'lookup_bind_password_enc', 'TEXT');
+  // Per-domain Cisco Duo MFA override (mode: inherit/enforced/disabled,
+  // optional separate Duo application credentials). See src/duo.js.
+  ensureColumn('domains', 'duo_config', "TEXT NOT NULL DEFAULT '{}'");
 
   // If this is an upgrade from a version that had a single `ldap_url` column,
   // backfill ldap_urls from it so existing domains keep working.
@@ -136,6 +140,13 @@ try {
     // opts in and fills in a mail server.
     db.prepare("INSERT INTO settings (key, value) VALUES ('alert_config', '{}')").run();
     logger.info('default_settings_seeded', { key: 'alert_config' });
+  }
+  const duoSetting = db.prepare("SELECT 1 FROM settings WHERE key = 'duo_config'").get();
+  if (!duoSetting) {
+    // MFA defaults to disabled globally until an admin configures a Duo
+    // application and explicitly enforces it.
+    db.prepare("INSERT INTO settings (key, value) VALUES ('duo_config', '{}')").run();
+    logger.info('default_settings_seeded', { key: 'duo_config' });
   }
 } catch (err) {
   logger.error('settings_seed_failed', logger.errInfo(err));

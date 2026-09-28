@@ -5,8 +5,9 @@ const ldap = require('../ldap');
 const audit = require('../audit');
 const logger = require('../logger');
 const mailer = require('../mailer');
+const duo = require('../duo');
 const cryptoHelper = require('../crypto');
-const { signUserToken, verifyToken } = require('../auth');
+const { signUserToken, signMfaPendingToken, verifyToken } = require('../auth');
 
 function featuresFor(domain) {
   return {
@@ -20,6 +21,29 @@ const REASON_MESSAGES = {
   NO_ALLOWED_GROUPS: 'no_allowed_groups_configured',
   NOT_AUTHORIZED: 'not_a_member_of_an_allowed_group',
 };
+
+const USER_COOKIE_OPTS = {
+  httpOnly: true,
+  sameSite: 'strict',
+  secure: process.env.COOKIE_SECURE === 'true',
+  maxAge: 2 * 60 * 60 * 1000,
+};
+
+// SameSite=Lax (not Strict) is required here: the browser leaves this site
+// entirely to show Duo's hosted prompt, then Duo redirects it back via a
+// top-level navigation. A Strict cookie would not be sent on that return
+// trip, breaking the flow; Lax still is for a plain top-level GET redirect.
+const MFA_PENDING_COOKIE_OPTS = {
+  httpOnly: true,
+  sameSite: 'lax',
+  secure: process.env.COOKIE_SECURE === 'true',
+  maxAge: 5 * 60 * 1000,
+};
+
+function issueSession(res, { username, domain, bindDn, password }) {
+  const token = signUserToken({ username, domainId: domain.id, pwd: cryptoHelper.encrypt(password), bindDn });
+  res.cookie('user_token', token, USER_COOKIE_OPTS);
+}
 
 router.post('/login', async (req, res) => {
   const { username, password } = req.body || {};
@@ -68,28 +92,131 @@ router.post('/login', async (req, res) => {
     return res.status(401).json({ error: 'Invalid username or password, or your account is not authorized to use this portal.' });
   }
 
+  // Primary (AD) authentication succeeded. If MFA is enforced for this
+  // domain, a full session is NOT issued yet - the person still has to
+  // complete Duo before they're considered logged in.
+  const effectiveDuo = duo.resolveEffective(domain);
+  if (effectiveDuo.enforced) {
+    if (!duo.isConfigured(effectiveDuo)) {
+      // Fail closed: "enforced" must never silently become "skipped"
+      // because an admin forgot to fill in the Duo application details.
+      logger.error('duo_misconfigured', { requestId: req.id, username, domain: domain.name });
+      audit.logEvent(req, {
+        domainId: domain.id, domainLabel: domain.name, eventType: 'login',
+        actorUsername: username, success: false, detail: 'MFA is enforced but not fully configured',
+      });
+      return res.status(503).json({ error: 'Multi-factor authentication is required but not configured correctly. Contact your administrator.' });
+    }
+
+    let authUrl, state;
+    try {
+      ({ authUrl, state } = await duo.startAuth(effectiveDuo, username));
+    } catch (e) {
+      logger.error('duo_start_auth_failed', { requestId: req.id, username, domain: domain.name, ...logger.errInfo(e) });
+      audit.logEvent(req, {
+        domainId: domain.id, domainLabel: domain.name, eventType: 'login',
+        actorUsername: username, success: false, detail: 'Could not start MFA challenge',
+      });
+      return res.status(503).json({ error: 'Could not start multi-factor authentication. Please try again shortly.' });
+    }
+
+    const pendingToken = signMfaPendingToken({
+      username, domainId: domain.id, bindDn: authorizedUser.dn,
+      pwd: cryptoHelper.encrypt(password), state,
+    });
+    res.cookie('mfa_pending', pendingToken, MFA_PENDING_COOKIE_OPTS);
+    logger.info('mfa_challenge_started', { requestId: req.id, username, domain: domain.name, ip: req.ip });
+    audit.logEvent(req, {
+      domainId: domain.id, domainLabel: domain.name, eventType: 'mfa_challenge',
+      actorUsername: username, success: true,
+    });
+    return res.json({ ok: true, mfaRequired: true, redirectUrl: authUrl });
+  }
+
   logger.info('user_login_success', { requestId: req.id, username, domain: domain.name, ip: req.ip });
   audit.logEvent(req, {
     domainId: domain.id, domainLabel: domain.name, eventType: 'login',
     actorUsername: username, success: true,
   });
-
-  // The user's own credentials are cached (encrypted) inside their signed,
-  // httpOnly session cookie so later requests can perform directory
-  // operations as them - there is no separate stored service account.
-  // `bindDn` is the account's real distinguishedName, resolved during
-  // authentication; every subsequent LDAP bind in this session uses it
-  // directly, regardless of what identifier the person originally typed.
-  const token = signUserToken({
-    username, domainId: domain.id, pwd: cryptoHelper.encrypt(password), bindDn: authorizedUser.dn,
-  });
-  res.cookie('user_token', token, {
-    httpOnly: true,
-    sameSite: 'strict',
-    secure: process.env.COOKIE_SECURE === 'true',
-    maxAge: 2 * 60 * 60 * 1000,
-  });
+  issueSession(res, { username, domain, bindDn: authorizedUser.dn, password });
   res.json({ ok: true, username, domain: domain.name, features: featuresFor(domain) });
+});
+
+// Duo redirects the browser back here after the person completes (or
+// cancels/fails) the Universal Prompt. This is a plain top-level GET, not
+// an API call the frontend makes directly, so on every outcome it redirects
+// back into the user portal UI rather than returning JSON.
+router.get('/duo-callback', async (req, res) => {
+  const finish = (path) => res.redirect(302, path);
+
+  const pending = req.cookies.mfa_pending && verifyToken(req.cookies.mfa_pending);
+  res.clearCookie('mfa_pending', { sameSite: 'lax', secure: process.env.COOKIE_SECURE === 'true' });
+
+  if (!pending || pending.role !== 'mfa_pending') {
+    logger.warn('mfa_callback_no_pending_session', { requestId: req.id, ip: req.ip });
+    return finish('/?error=mfa_session_expired');
+  }
+
+  const domain = domainsModule.getById(pending.domainId);
+  if (!domain) {
+    logger.error('mfa_callback_domain_missing', { requestId: req.id, username: pending.username });
+    return finish('/?error=mfa_failed');
+  }
+
+  if (req.query.error) {
+    // Duo itself reported a problem (e.g. the person cancelled the prompt).
+    logger.warn('mfa_denied_by_duo', { requestId: req.id, username: pending.username, domain: domain.name, error: req.query.error });
+    audit.logEvent(req, {
+      domainId: domain.id, domainLabel: domain.name, eventType: 'login',
+      actorUsername: pending.username, success: false, detail: 'MFA verification failed',
+    });
+    mailer.sendAlert({
+      domainRow: domain, category: 'login_failure',
+      ...mailer.loginFailureEmail({ username: pending.username, domainName: domain.name, reason: 'MFA verification failed', ip: req.ip, time: new Date().toISOString() }),
+    });
+    return finish('/?error=mfa_failed');
+  }
+
+  if (!req.query.state || req.query.state !== pending.state || !req.query.duo_code) {
+    logger.warn('mfa_callback_state_mismatch', { requestId: req.id, username: pending.username, domain: domain.name });
+    audit.logEvent(req, {
+      domainId: domain.id, domainLabel: domain.name, eventType: 'login',
+      actorUsername: pending.username, success: false, detail: 'MFA verification failed',
+    });
+    return finish('/?error=mfa_failed');
+  }
+
+  const effectiveDuo = duo.resolveEffective(domain);
+  try {
+    await duo.verifyAuth(effectiveDuo, req.query.duo_code, pending.username);
+  } catch (e) {
+    logger.warn('mfa_verify_failed', { requestId: req.id, username: pending.username, domain: domain.name, ip: req.ip, ...logger.errInfo(e) });
+    audit.logEvent(req, {
+      domainId: domain.id, domainLabel: domain.name, eventType: 'login',
+      actorUsername: pending.username, success: false, detail: 'MFA verification failed',
+    });
+    mailer.sendAlert({
+      domainRow: domain, category: 'login_failure',
+      ...mailer.loginFailureEmail({ username: pending.username, domainName: domain.name, reason: 'MFA verification failed', ip: req.ip, time: new Date().toISOString() }),
+    });
+    return finish('/?error=mfa_failed');
+  }
+
+  let password;
+  try {
+    password = cryptoHelper.decrypt(pending.pwd);
+  } catch (e) {
+    logger.error('mfa_callback_decrypt_failed', { requestId: req.id, username: pending.username, ...logger.errInfo(e) });
+    return finish('/?error=mfa_session_expired');
+  }
+
+  logger.info('user_login_success', { requestId: req.id, username: pending.username, domain: domain.name, ip: req.ip, mfa: true });
+  audit.logEvent(req, {
+    domainId: domain.id, domainLabel: domain.name, eventType: 'login',
+    actorUsername: pending.username, success: true,
+  });
+  issueSession(res, { username: pending.username, domain, bindDn: pending.bindDn, password });
+  return finish('/');
 });
 
 router.post('/logout', (req, res) => {

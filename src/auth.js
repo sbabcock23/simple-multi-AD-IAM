@@ -19,6 +19,15 @@ function signUserToken(payload) {
   return jwt.sign({ ...payload, role: 'user' }, JWT_SECRET, { expiresIn: '2h' });
 }
 
+// Short-lived token representing "primary (AD) authentication succeeded,
+// Duo verification is still pending". Deliberately a distinct role/shape
+// from the full user session token so a login can never be treated as
+// complete until Duo confirms - and it expires quickly since it only needs
+// to survive the round trip through Duo's hosted prompt.
+function signMfaPendingToken(payload) {
+  return jwt.sign({ ...payload, role: 'mfa_pending' }, JWT_SECRET, { expiresIn: '5m' });
+}
+
 function verifyToken(token) {
   try {
     return jwt.verify(token, JWT_SECRET);
@@ -27,4 +36,4 @@ function verifyToken(token) {
   }
 }
 
-module.exports = { hashPassword, verifyPassword, signAdminToken, signUserToken, verifyToken };
+module.exports = { hashPassword, verifyPassword, signAdminToken, signUserToken, signMfaPendingToken, verifyToken };

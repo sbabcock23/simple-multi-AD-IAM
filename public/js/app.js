@@ -42,6 +42,26 @@ function showApp(me) {
   loadActivity();
 }
 
+const MFA_ERROR_MESSAGES = {
+  mfa_failed: 'Multi-factor authentication failed or was cancelled. Please sign in again.',
+  mfa_session_expired: 'Your sign-in session expired before multi-factor authentication could complete. Please sign in again.',
+};
+
+function showLoginErrorFromQuery() {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('error');
+  if (code && MFA_ERROR_MESSAGES[code]) {
+    $('#loginError').textContent = MFA_ERROR_MESSAGES[code];
+    $('#loginError').classList.remove('hidden');
+  }
+  if (code) {
+    // Clean the URL so refreshing doesn't keep re-showing the error.
+    params.delete('error');
+    const qs = params.toString();
+    window.history.replaceState({}, '', window.location.pathname + (qs ? '?' + qs : ''));
+  }
+}
+
 $('#loginForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   $('#loginError').classList.add('hidden');
@@ -49,6 +69,11 @@ $('#loginForm').addEventListener('submit', async (e) => {
   const password = $('#loginPassword').value;
   try {
     const data = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) });
+    if (data.mfaRequired && data.redirectUrl) {
+      // Full top-level navigation to Duo's hosted prompt - not a fetch.
+      window.location.href = data.redirectUrl;
+      return;
+    }
     showApp(data);
   } catch (err) {
     $('#loginError').textContent = err.message;
@@ -193,6 +218,7 @@ const EVENT_LABELS = {
   search: 'Searched',
   unlock: 'Unlocked account',
   reset_password: 'Reset password',
+  mfa_challenge: 'MFA challenge sent',
 };
 
 function activityRowHtml(r) {
@@ -213,4 +239,5 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+showLoginErrorFromQuery();
 checkSession();
