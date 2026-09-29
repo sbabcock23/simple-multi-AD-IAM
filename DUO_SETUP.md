@@ -16,8 +16,7 @@ optionally override it per domain — see "Global vs. per-domain" below.
 1. Sign in to the [Duo Admin Panel](https://admin.duosecurity.com).
 2. Go to **Applications → Protect an Application**.
 3. Search for and select **"Duo Single Sign-On"** or, if your Duo edition
-   exposes it directly, an application type described as **Generic
-   OIDC Relying Party** / **Web SDK / Universal Prompt**. (The exact naming
+   exposes it directly, an application type described as **Web SDK**. (The exact naming
    varies by Duo edition — what matters is that it's an OIDC-based
    Universal Prompt application, not a legacy "Duo Auth API (traditional
    prompt)" integration, which this app does not use.)
