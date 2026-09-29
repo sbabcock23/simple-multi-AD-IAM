@@ -62,13 +62,20 @@ function isConfigured(effective) {
   return !!(effective.clientId && effective.clientSecret && effective.apiHostname && effective.redirectUrl);
 }
 
+// Duo's SDK expects a bare hostname (api-XXXXXXXX.duosecurity.com). Admins
+// often paste "https://api-XXXX.duosecurity.com/" - strip scheme, path,
+// and whitespace so that doesn't produce a malformed request URL.
+function normalizeHost(host) {
+  return String(host || '').trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '');
+}
+
 function buildClient(effective) {
   const { Client } = require('@duosecurity/duo_universal');
   return new Client({
-    clientId: effective.clientId,
-    clientSecret: effective.clientSecret,
-    apiHost: effective.apiHostname,
-    redirectUrl: effective.redirectUrl,
+    clientId: String(effective.clientId || '').trim(),
+    clientSecret: String(effective.clientSecret || '').trim(),
+    apiHost: normalizeHost(effective.apiHostname),
+    redirectUrl: String(effective.redirectUrl || '').trim(),
   });
 }
 
@@ -78,7 +85,13 @@ function buildClient(effective) {
 async function startAuth(effective, username) {
   const client = buildClient(effective);
   const state = client.generateState();
-  const authUrl = client.createAuthUrl(username, state);
+  // In @duosecurity/duo_universal v3, createAuthUrl() is async (it signs the
+  // request JWT with jose). Without `await` this returned a Promise, which
+  // JSON-serialised to {} and made the browser navigate to "[object Object]".
+  const authUrl = await client.createAuthUrl(username, state);
+  if (typeof authUrl !== 'string' || !authUrl.startsWith('https://')) {
+    throw new Error('Duo SDK did not return a valid authorization URL');
+  }
   return { authUrl, state };
 }
 
@@ -90,6 +103,10 @@ async function verifyAuth(effective, duoCode, username) {
 }
 
 async function healthCheck(effective) {
+  const host = normalizeHost(effective.apiHostname);
+  if (!/^api-[a-z0-9]+\.(duosecurity|duofederal)\.com$/i.test(host)) {
+    throw new Error(`"${host}" doesn't look like a Duo API hostname (expected api-XXXXXXXX.duosecurity.com - it's on the application's details page, not the Admin Panel URL)`);
+  }
   const client = buildClient(effective);
   return client.healthCheck();
 }
