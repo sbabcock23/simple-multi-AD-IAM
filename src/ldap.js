@@ -69,11 +69,39 @@ function isConnectivityError(err) {
 // single unreachable server can fail a login even when a working server is
 // configured right after it. Failover across the pool is therefore handled
 // explicitly here instead of being delegated to ldapjs.
+// Remembers, per domain, which URL last connected successfully. Every
+// directory operation (login, unlock, reset password, search, ...) opens
+// its own short-lived connection via connectClient(), so without this a
+// domain with a down first server pays the full connectTimeout on that
+// dead server again on *every single action* - which, across a login
+// followed by a lookup-then-unlock or lookup-then-reset (two LDAP
+// connections each), is enough added latency that those actions can
+// appear to hang or fail even though they would eventually succeed. Once
+// any connection succeeds against a given URL, that URL is tried first on
+// subsequent calls for the same domain, so only the very first request
+// after a server goes down pays the timeout; everything after that goes
+// straight to the known-good server. If the remembered URL stops working,
+// it's dropped from the cache and the full list (in configured order) is
+// tried again.
+const lastGoodUrlByDomain = new Map();
+
+function domainCacheKey(domainConfig) {
+  return domainConfig && domainConfig.id != null
+    ? `id:${domainConfig.id}`
+    : `urls:${(domainConfig.ldap_urls || []).join(',')}`;
+}
+
 function connectClient(domainConfig) {
-  const urls = domainConfig.ldap_urls || [];
-  if (!urls.length) {
+  const configuredUrls = domainConfig.ldap_urls || [];
+  if (!configuredUrls.length) {
     return Promise.reject(new Error('No LDAP servers configured for this domain'));
   }
+
+  const cacheKey = domainCacheKey(domainConfig);
+  const lastGood = lastGoodUrlByDomain.get(cacheKey);
+  const urls = lastGood && configuredUrls.includes(lastGood)
+    ? [lastGood, ...configuredUrls.filter((u) => u !== lastGood)]
+    : configuredUrls;
 
   return new Promise((resolve, reject) => {
     let index = 0;
@@ -97,6 +125,7 @@ function connectClient(domainConfig) {
         if (settled) return;
         settled = true;
         cleanup();
+        lastGoodUrlByDomain.set(cacheKey, url);
         resolve(client);
       };
 
@@ -106,6 +135,9 @@ function connectClient(domainConfig) {
         cleanup();
         logger.warn('ldap_connect_error', { url, ...logger.errInfo(err) });
         lastErr = err;
+        if (lastGoodUrlByDomain.get(cacheKey) === url) {
+          lastGoodUrlByDomain.delete(cacheKey);
+        }
         try { client.destroy(); } catch (e) { /* already gone */ }
         if (isConnectivityError(err)) {
           attemptNext();
