@@ -95,6 +95,9 @@ how that works, and its one real limitation:
 
 ## Multi-factor authentication (Cisco Duo)
 
+See **[DUO_SETUP.md](DUO_SETUP.md)** for a full step-by-step setup guide.
+Short version below.
+
 Admin → Multi-factor authentication (Cisco Duo) configures a Duo Universal
 Prompt (OAuth2) challenge that runs after a successful username/password
 sign-in on the **user portal**. Two modes only: **Enforced** (required for
