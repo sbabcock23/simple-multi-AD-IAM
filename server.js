@@ -22,6 +22,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
+const APP_VERSION = require('./package.json').version;
 
 const trustProxySetting = process.env.TRUST_PROXY;
 function applyTrustProxy(app) {
@@ -77,6 +78,7 @@ function createBaseApp(name) {
   });
 
   app.get('/api/health', (req, res) => res.json({ ok: true, app: name }));
+  app.get('/api/version', (req, res) => res.json({ version: APP_VERSION }));
 
   return app;
 }

@@ -706,3 +706,13 @@ $('#downloadReportBtn').addEventListener('click', () => {
 });
 
 checkSession();
+
+(async function loadVersion() {
+  try {
+    const res = await fetch('/api/version');
+    const v = await res.json();
+    document.querySelector('#appVersion').textContent = v.version;
+  } catch (e) {
+    document.querySelector('#appVersion').textContent = 'unknown';
+  }
+})();

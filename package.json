@@ -1,6 +1,6 @@
 {
   "name": "iam-self-service",
-  "version": "1.0.0",
+  "version": "2026.09.4",
   "description": "Multi-domain Active Directory self-service portal for account unlock and password reset",
   "main": "server.js",
   "scripts": {

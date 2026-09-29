@@ -62,9 +62,9 @@ $('#logoutBtn').addEventListener('click', async () => {
 });
 
 let searchTimeout;
-$('#searchInput').addEventListener('input', () => {
+$('#userLookupQuery').addEventListener('input', () => {
   clearTimeout(searchTimeout);
-  const q = $('#searchInput').value.trim();
+  const q = $('#userLookupQuery').value.trim();
   if (q.length < 2) { $('#searchResults').innerHTML = ''; return; }
   searchTimeout = setTimeout(() => runSearch(q), 300);
 });
@@ -93,6 +93,7 @@ function renderResults(results) {
       <div class="badges">
         ${u.locked ? '<span class="badge badge-locked">Locked</span>' : ''}
         ${u.disabled ? '<span class="badge badge-disabled">Disabled</span>' : ''}
+        ${!u.locked && !u.disabled ? '<span class="badge badge-ok">Active</span>' : ''}
       </div>`;
     div.addEventListener('click', () => selectUser(u));
     container.appendChild(div);
@@ -103,22 +104,29 @@ function selectUser(u) {
   selectedUser = u;
   $('#selectedUserCard').classList.remove('hidden');
   $('#selUserName').textContent = u.displayName || u.cn;
-  $('#selUserMeta').textContent =
-    `${u.userPrincipalName || u.sAMAccountName}${u.locked ? ' · Locked' : ''}${u.disabled ? ' · Disabled' : ''}`;
+  const isActive = !u.locked && !u.disabled;
+  $('#selUserMeta').innerHTML =
+    `${escapeHtml(u.userPrincipalName || u.sAMAccountName)}${u.locked ? ' · Locked' : ''}${u.disabled ? ' · Disabled' : ''}` +
+    `${isActive ? ' · <span class="badge badge-ok">Active</span>' : ''}`;
   $('#unlockBtn').classList.toggle('hidden', !currentFeatures.unlock);
+  // Nothing to unlock unless the account is actually locked.
+  $('#unlockBtn').disabled = !u.locked;
+  $('#unlockBtn').title = u.locked ? '' : 'This account is not locked';
   $('#resetBtn').classList.toggle('hidden', !currentFeatures.reset);
   $('#actionMessage').classList.add('hidden');
 }
 
 $('#unlockBtn').addEventListener('click', async () => {
-  if (!selectedUser) return;
+  if (!selectedUser || !selectedUser.locked) return;
+  const name = selectedUser.displayName || selectedUser.cn;
   try {
     await api(`/api/users/${encodeURIComponent(selectedUser.sAMAccountName)}/unlock`, { method: 'POST' });
-    showMessage('Account unlocked successfully.', false);
+    showNotice('Account unlocked', `The account for ${name} has been unlocked.`, false);
     const refreshed = await api(`/api/users/${encodeURIComponent(selectedUser.sAMAccountName)}`);
     selectUser(refreshed);
+    if ($('#userLookupQuery').value.trim().length >= 2) runSearch($('#userLookupQuery').value.trim());
   } catch (e) {
-    showMessage(e.message, true);
+    showNotice('Unlock failed', e.message, true);
   } finally {
     loadActivity();
   }
@@ -146,7 +154,7 @@ $('#confirmReset').addEventListener('click', async () => {
       body: JSON.stringify({ newPassword: p1, forceChange: $('#forceChange').checked }),
     });
     $('#resetModal').classList.add('hidden');
-    showMessage('Password reset successfully.', false);
+    showNotice('Password reset', `The password for ${selectedUser.displayName || selectedUser.cn} has been reset.`, false);
   } catch (e) {
     showResetError(e.message);
   } finally {
@@ -158,6 +166,18 @@ function showResetError(msg) {
   $('#resetError').textContent = msg;
   $('#resetError').classList.remove('hidden');
 }
+
+function showNotice(title, text, isError) {
+  $('#noticeTitle').textContent = title;
+  $('#noticeText').textContent = text;
+  const icon = $('#noticeIcon');
+  icon.className = 'notice-icon ' + (isError ? 'err' : 'ok');
+  icon.innerHTML = isError ? '&#10007;' : '&#10003;';
+  $('#noticeModal').classList.remove('hidden');
+  $('#noticeOk').focus();
+}
+
+$('#noticeOk').addEventListener('click', () => $('#noticeModal').classList.add('hidden'));
 
 function showMessage(msg, isError) {
   const el = $('#actionMessage');
@@ -213,4 +233,14 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+async function loadVersion() {
+  try {
+    const v = await api('/api/version');
+    $('#appVersion').textContent = v.version;
+  } catch (e) {
+    $('#appVersion').textContent = 'unknown';
+  }
+}
+
+loadVersion();
 checkSession();
