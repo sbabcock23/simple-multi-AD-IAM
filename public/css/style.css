@@ -43,7 +43,7 @@ h3 { margin-top: 0; }
 h4 { margin: 16px 0 4px; font-size: 14px; }
 .muted { color: var(--muted); font-size: 14px; }
 label { display: block; margin: 12px 0; font-size: 14px; font-weight: 500; }
-input[type=text], input[type=password], input[type=number], input[type=email], select, textarea, input:not([type]) {
+input[type=text], input[type=search], input[type=password], input[type=number], input[type=email], select, textarea, input:not([type]) {
   width: 100%; padding: 10px 12px; margin-top: 6px; border: 1px solid var(--border);
   border-radius: 8px; font-size: 14px; font-family: inherit; box-sizing: border-box;
 }
@@ -115,3 +115,5 @@ input[type=checkbox] { margin-right: 8px; }
 .modal-card.notice .notice-icon.ok { color: var(--success); }
 .modal-card.notice .notice-icon.err { color: var(--danger); }
 .modal-card.notice .modal-actions { justify-content: center; }
+input[type=search] { -webkit-appearance: none; appearance: none; }
+input[type=search]::-webkit-search-decoration { -webkit-appearance: none; }
