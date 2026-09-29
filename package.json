@@ -16,6 +16,6 @@
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
     "ldapjs": "^3.0.7",
-    "nodemailer": "^6.9.15"
+    "nodemailer": "^10.0.12"
   }
 }
