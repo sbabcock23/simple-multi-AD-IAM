@@ -43,6 +43,11 @@ function signAdminToken(payload, ttlSeconds = sessionConfig.adminTimeoutSeconds(
   return jwt.sign({ ...payload, role: 'admin' }, JWT_SECRET, { expiresIn: ttlSeconds });
 }
 
+function buildEncryptedAdminToken(payload, ttlSeconds = sessionConfig.adminTimeoutSeconds()) {
+  const token = signAdminToken(payload, ttlSeconds);
+  return encryptCookieToken(token);
+}
+
 function signUserToken(payload, ttlSeconds = sessionConfig.userTimeoutSeconds()) {
   return jwt.sign({ ...payload, role: 'user' }, JWT_SECRET, { expiresIn: ttlSeconds });
 }
@@ -80,4 +85,4 @@ function verifyToken(token) {
   }
 }
 
-module.exports = { hashPassword, verifyPassword, signAdminToken, signUserToken, verifyToken, sessionCookieOptions, refreshSession };
+module.exports = { hashPassword, verifyPassword, signAdminToken, buildEncryptedAdminToken, signUserToken, verifyToken, sessionCookieOptions, refreshSession };
