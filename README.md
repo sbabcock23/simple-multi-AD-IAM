@@ -112,6 +112,33 @@ how that works, and its one real limitation:
 - **User portal → My activity**: each signed-in user sees their own login
   and action history (current session and past), but never other users'.
 
+## Email notifications
+
+Three notification types are available, each with its own customizable
+subject/body template (**Admin → Email templates**, or files under the
+templates directory):
+
+| Type | Template | Default |
+| --- | --- | --- |
+| Successful login | `login_success` (`{{username}} {{domain}} {{ip}} {{time}}`) | Off |
+| Failed login | `login_failure` | On |
+| Account action (unlock / password reset) | `account_action` | On |
+
+Each type is switched on or off **globally** (Admin → Global settings) and
+again **per domain** (domain edit form). A notification is sent only when the
+global master switch, the global type toggle, the domain switch, and the
+domain type toggle are all on. Notifications go to the configured recipient
+list (domain recipients override the global list).
+
+## Session timeouts
+
+Admin → Global settings → **Session timeouts** sets an inactivity timeout in
+minutes (5–1440) separately for the **user portal** (default 120) and the
+**admin portal** (default 480). Activity keeps a session alive; after the
+timeout the browser signs the person out automatically and the login page
+explains why. The server enforces the same timeout on the session cookie.
+Changes apply to existing sessions on their next request.
+
 ## Required Active Directory setup
 
 For each domain you add:
@@ -255,7 +282,8 @@ actual client IP.
   Traefik, or a load balancer) in any real deployment, and set
   `COOKIE_SECURE=true` once you do.
 - The end user's AD password is kept only inside their own encrypted,
-  signed, httpOnly session cookie for up to 2 hours, and is never written
+  signed, httpOnly session cookie for as long as the session lasts (see
+  *Session timeouts* below), and is never written
   to disk or logged. Protect `ENCRYPTION_KEY` and `JWT_SECRET` the same way
   you'd protect any credential-bearing secret (e.g. via your orchestrator's
   secret store rather than committing them to source control).

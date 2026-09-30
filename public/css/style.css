@@ -117,3 +117,4 @@ input[type=checkbox] { margin-right: 8px; }
 .modal-card.notice .modal-actions { justify-content: center; }
 input[type=search] { -webkit-appearance: none; appearance: none; }
 input[type=search]::-webkit-search-decoration { -webkit-appearance: none; }
+.info-notice { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; border-radius: 8px; padding: 8px 12px; font-size: 13px; margin: 8px 0; }

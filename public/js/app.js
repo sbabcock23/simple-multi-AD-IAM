@@ -1,5 +1,25 @@
 const $ = (sel) => document.querySelector(sel);
 
+const EXPIRED_FLAG = 'iam_session_expired';
+
+// Signs the browser out when the idle timeout elapses: ends the server session
+// (best effort), remembers why, and reloads so no user data is left on screen.
+const sessionGuard = createSessionGuard({
+  storageKey: 'iam_user_last_activity',
+  keepalive: () => api('/api/users/keepalive', { method: 'POST' }),
+  onExpire: async () => {
+    try {
+      await fetch('/api/auth/logout', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: 'timeout' }),
+      });
+    } catch (e) { /* server session ends on its own anyway */ }
+    try { sessionStorage.setItem(EXPIRED_FLAG, '1'); } catch (e) { /* ignore */ }
+    location.reload();
+  },
+});
+
 let currentFeatures = {};
 let selectedUser = null;
 
@@ -10,6 +30,16 @@ async function api(path, opts = {}) {
     ...opts,
   });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && sessionGuard.isRunning() && path !== '/api/auth/login') {
+    // The server ended the session (timeout) while the page was open.
+    sessionGuard.expire();
+    throw new Error('Your session has expired. Please sign in again.');
+  }
+  if (res.ok) {
+    const ttl = Number(res.headers.get('X-Session-Timeout'));
+    if (ttl) sessionGuard.setTimeoutSeconds(ttl);
+    if (path !== '/api/auth/login') sessionGuard.noteRequest();
+  }
   if (!res.ok) {
     const requestId = data.requestId || res.headers.get('X-Request-Id');
     const message = data.error || 'Request failed';
@@ -28,6 +58,13 @@ async function checkSession() {
 }
 
 function showLogin() {
+  try {
+    if (sessionStorage.getItem(EXPIRED_FLAG)) {
+      sessionStorage.removeItem(EXPIRED_FLAG);
+      $('#loginNotice').textContent = 'You were signed out because your session timed out. Please sign in again.';
+      $('#loginNotice').classList.remove('hidden');
+    }
+  } catch (e) { /* ignore */ }
   $('#loginView').classList.remove('hidden');
   $('#appView').classList.add('hidden');
   $('#userInfo').classList.add('hidden');
@@ -35,6 +72,7 @@ function showLogin() {
 
 function showApp(me) {
   currentFeatures = me.features;
+  sessionGuard.start(me.sessionTimeoutSeconds);
   $('#loginView').classList.add('hidden');
   $('#appView').classList.remove('hidden');
   $('#userInfo').classList.remove('hidden');
@@ -57,6 +95,7 @@ $('#loginForm').addEventListener('submit', async (e) => {
 });
 
 $('#logoutBtn').addEventListener('click', async () => {
+  sessionGuard.stop();
   await api('/api/auth/logout', { method: 'POST' });
   location.reload();
 });

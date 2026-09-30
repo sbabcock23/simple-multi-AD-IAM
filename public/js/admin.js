@@ -1,5 +1,18 @@
 const $ = (sel) => document.querySelector(sel);
 
+const EXPIRED_FLAG = 'iam_admin_session_expired';
+
+// Independent of the user portal: its own timeout, storage key, and flag.
+const sessionGuard = createSessionGuard({
+  storageKey: 'iam_admin_last_activity',
+  keepalive: () => api('/api/admin/keepalive', { method: 'POST' }),
+  onExpire: async () => {
+    try { await fetch('/api/admin/logout', { method: 'POST', credentials: 'include' }); } catch (e) { /* ignore */ }
+    try { sessionStorage.setItem(EXPIRED_FLAG, '1'); } catch (e) { /* ignore */ }
+    location.reload();
+  },
+});
+
 async function api(path, opts = {}) {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
@@ -7,6 +20,16 @@ async function api(path, opts = {}) {
     ...opts,
   });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && sessionGuard.isRunning() && path !== '/api/admin/login') {
+    // The server ended the session (timeout) while the page was open.
+    sessionGuard.expire();
+    throw new Error('Your session has expired. Please sign in again.');
+  }
+  if (res.ok) {
+    const ttl = Number(res.headers.get('X-Session-Timeout'));
+    if (ttl) sessionGuard.setTimeoutSeconds(ttl);
+    if (path !== '/api/admin/login') sessionGuard.noteRequest();
+  }
   if (!res.ok) {
     const requestId = data.requestId || res.headers.get('X-Request-Id');
     const message = data.error || 'Request failed';
@@ -29,12 +52,20 @@ async function checkSession() {
 }
 
 function showLogin() {
+  try {
+    if (sessionStorage.getItem(EXPIRED_FLAG)) {
+      sessionStorage.removeItem(EXPIRED_FLAG);
+      $('#adminLoginNotice').textContent = 'You were signed out because your session timed out. Please sign in again.';
+      $('#adminLoginNotice').classList.remove('hidden');
+    }
+  } catch (e) { /* ignore */ }
   $('#adminLoginView').classList.remove('hidden');
   $('#adminAppView').classList.add('hidden');
   $('#adminInfo').classList.add('hidden');
 }
 
 function showApp(me) {
+  sessionGuard.start(me.sessionTimeoutSeconds);
   $('#adminLoginView').classList.add('hidden');
   $('#adminAppView').classList.remove('hidden');
   $('#adminInfo').classList.remove('hidden');
@@ -64,6 +95,7 @@ $('#adminLoginForm').addEventListener('submit', async (e) => {
 });
 
 $('#adminLogoutBtn').addEventListener('click', async () => {
+  sessionGuard.stop();
   await api('/api/admin/logout', { method: 'POST' });
   location.reload();
 });
@@ -137,8 +169,9 @@ function openDomainModal(d) {
   $('#dLookupTestEmail').value = '';
   $('#lookupTestResult').classList.add('hidden');
 
-  const alertCfg = d ? d.alert_config : { enabled: true, onLoginFailure: true, onAccountAction: true, recipients: [], smtpOverride: false, smtp: {} };
+  const alertCfg = d ? d.alert_config : { enabled: true, onLoginSuccess: true, onLoginFailure: true, onAccountAction: true, recipients: [], smtpOverride: false, smtp: {} };
   $('#dAlertsEnabled').checked = !!alertCfg.enabled;
+  $('#dAlertLoginSuccess').checked = alertCfg.onLoginSuccess !== false;
   $('#dAlertLoginFailure').checked = alertCfg.onLoginFailure !== false;
   $('#dAlertAccountAction').checked = alertCfg.onAccountAction !== false;
   $('#dAlertRecipients').value = (alertCfg.recipients || []).join(', ');
@@ -194,6 +227,7 @@ function collectValues(containerSel, cssClass) {
 function domainAlertConfigPayload() {
   return {
     enabled: $('#dAlertsEnabled').checked,
+    onLoginSuccess: $('#dAlertLoginSuccess').checked,
     onLoginFailure: $('#dAlertLoginFailure').checked,
     onAccountAction: $('#dAlertAccountAction').checked,
     recipients: splitList($('#dAlertRecipients').value),
@@ -331,13 +365,17 @@ async function deleteDomain(id) {
 // ---------- Global settings ----------
 
 async function loadSettings() {
-  const [s, alerts] = await Promise.all([
+  const [s, alerts, sessions] = await Promise.all([
     api('/api/admin/settings'),
     api('/api/admin/alerts'),
+    api('/api/admin/session-config'),
   ]);
+  $('#gUserTimeout').value = sessions.userTimeoutMinutes;
+  $('#gAdminTimeout').value = sessions.adminTimeoutMinutes;
   $('#globalAuditEnabled').checked = !!s.auditLoggingEnabled;
 
   $('#globalAlertsEnabled').checked = !!alerts.enabled;
+  $('#gAlertLoginSuccess').checked = !!alerts.onLoginSuccess;
   $('#gAlertLoginFailure').checked = alerts.onLoginFailure !== false;
   $('#gAlertAccountAction').checked = alerts.onAccountAction !== false;
   $('#gAlertRecipients').value = (alerts.recipients || []).join(', ');
@@ -352,6 +390,24 @@ async function loadSettings() {
 }
 
 $('#saveSettingsBtn').addEventListener('click', async () => {
+  $('#settingsError').classList.add('hidden');
+  try {
+    await saveGlobalSettings();
+  } catch (e) {
+    $('#settingsError').textContent = e.message;
+    $('#settingsError').classList.remove('hidden');
+  }
+});
+
+async function saveGlobalSettings() {
+  // Validate/save session timeouts first so a bad value stops the save before anything else changes.
+  await api('/api/admin/session-config', {
+    method: 'PUT',
+    body: JSON.stringify({
+      userTimeoutMinutes: Number($('#gUserTimeout').value),
+      adminTimeoutMinutes: Number($('#gAdminTimeout').value),
+    }),
+  });
   await api('/api/admin/settings', {
     method: 'PUT',
     body: JSON.stringify({ auditLoggingEnabled: $('#globalAuditEnabled').checked }),
@@ -360,6 +416,7 @@ $('#saveSettingsBtn').addEventListener('click', async () => {
     method: 'PUT',
     body: JSON.stringify({
       enabled: $('#globalAlertsEnabled').checked,
+      onLoginSuccess: $('#gAlertLoginSuccess').checked,
       onLoginFailure: $('#gAlertLoginFailure').checked,
       onAccountAction: $('#gAlertAccountAction').checked,
       recipients: splitList($('#gAlertRecipients').value),
@@ -377,7 +434,7 @@ $('#saveSettingsBtn').addEventListener('click', async () => {
   $('#settingsSaved').classList.remove('hidden');
   setTimeout(() => $('#settingsSaved').classList.add('hidden'), 2000);
   loadSettings();
-});
+}
 
 $('#testGlobalEmailBtn').addEventListener('click', async () => {
   const resultEl = $('#globalEmailTestResult');

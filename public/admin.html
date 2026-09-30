@@ -23,6 +23,7 @@
     <h1>Admin sign in</h1>
     <label>Username <input type="text" id="adminUsername" required/></label>
     <label>Password <input type="password" id="adminPassword" required/></label>
+    <div id="adminLoginNotice" class="info-notice hidden"></div>
     <div id="adminLoginError" class="error hidden"></div>
     <button type="submit" class="btn-primary">Sign in</button>
   </form>
@@ -46,9 +47,17 @@
     <label class="checkbox"><input type="checkbox" id="globalAuditEnabled"/> Enable audit logging (global)</label>
     <p class="muted" style="margin-top:0;">Each domain also has its own audit toggle in its edit form, which only matters while this is on.</p>
 
+    <h4>Session timeouts</h4>
+    <p class="muted" style="margin-top:0;">Signed-in users are logged out automatically after this many minutes of inactivity. The user portal and the admin portal are set independently. Changes apply to existing sessions on their next request.</p>
+    <div class="grid2">
+      <label>User portal timeout (minutes) <input type="number" id="gUserTimeout" min="5" max="1440" step="1" autocomplete="off"/></label>
+      <label>Admin portal timeout (minutes) <input type="number" id="gAdminTimeout" min="5" max="1440" step="1" autocomplete="off"/></label>
+    </div>
+
     <h4>Email alerts</h4>
-    <p class="muted" style="margin-top:0;">Sends an email on failed logins and on account unlock / password reset actions. Any domain can override the recipients and/or SMTP server in its own edit form, or narrow which of these triggers apply to it.</p>
+    <p class="muted" style="margin-top:0;">Sends an email on successful logins, failed logins, and account unlock / password reset actions. Each type can be switched on or off here and again per domain; successful-login alerts are off by default. Any domain can override the recipients and/or SMTP server in its own edit form, or narrow which of these triggers apply to it.</p>
     <label class="checkbox"><input type="checkbox" id="globalAlertsEnabled"/> Enable email alerts (global)</label>
+    <label class="checkbox"><input type="checkbox" id="gAlertLoginSuccess"/> Alert on successful logins</label>
     <label class="checkbox"><input type="checkbox" id="gAlertLoginFailure" checked/> Alert on failed logins</label>
     <label class="checkbox"><input type="checkbox" id="gAlertAccountAction" checked/> Alert on account actions (unlock / password reset)</label>
     <label>Default alert recipients (comma-separated)
@@ -68,6 +77,7 @@
       <button id="testGlobalEmailBtn" class="btn-secondary" type="button">Send test email</button>
       <span id="settingsSaved" class="success hidden">Saved.</span>
     </div>
+    <div id="settingsError" class="error hidden"></div>
     <div id="globalEmailTestResult" class="hidden" style="margin-top:8px; font-size:13px;"></div>
   </div>
 
@@ -198,6 +208,7 @@
     <h4>Email alerts override (optional)</h4>
     <p class="muted" style="margin-top:0;">Alerts still require email alerts to be enabled globally - these settings narrow or redirect alerts for this domain specifically.</p>
     <label class="checkbox"><input type="checkbox" id="dAlertsEnabled" checked/> Enable email alerts for this domain</label>
+    <label class="checkbox"><input type="checkbox" id="dAlertLoginSuccess" checked/> Alert on successful logins</label>
     <label class="checkbox"><input type="checkbox" id="dAlertLoginFailure" checked/> Alert on failed logins</label>
     <label class="checkbox"><input type="checkbox" id="dAlertAccountAction" checked/> Alert on account actions (unlock / password reset)</label>
     <label>Recipients override (comma-separated)
@@ -244,6 +255,7 @@
 
 <footer class="app-footer">IAM Self-Service &middot; Version <span id="appVersion">&hellip;</span></footer>
 
+<script src="/js/session.js"></script>
 <script src="/js/admin.js"></script>
 </body>
 </html>

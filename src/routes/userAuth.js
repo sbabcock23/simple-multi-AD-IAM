@@ -6,7 +6,8 @@ const audit = require('../audit');
 const logger = require('../logger');
 const mailer = require('../mailer');
 const cryptoHelper = require('../crypto');
-const { signUserToken, verifyToken } = require('../auth');
+const { signUserToken, verifyToken, sessionCookieOptions, refreshSession } = require('../auth');
+const sessionConfig = require('../sessionConfig');
 
 function featuresFor(domain) {
   return {
@@ -73,6 +74,10 @@ router.post('/login', async (req, res) => {
     domainId: domain.id, domainLabel: domain.name, eventType: 'login',
     actorUsername: username, success: true,
   });
+  mailer.sendAlert({
+    domainRow: domain, category: 'login_success',
+    ...mailer.loginSuccessEmail({ username, domainName: domain.name, ip: req.ip, time: new Date().toISOString() }),
+  });
 
   // The user's own credentials are cached (encrypted) inside their signed,
   // httpOnly session cookie so later requests can perform directory
@@ -80,16 +85,12 @@ router.post('/login', async (req, res) => {
   // `bindDn` is the account's real distinguishedName, resolved during
   // authentication; every subsequent LDAP bind in this session uses it
   // directly, regardless of what identifier the person originally typed.
+  const ttl = sessionConfig.userTimeoutSeconds();
   const token = signUserToken({
     username, domainId: domain.id, pwd: cryptoHelper.encrypt(password), bindDn: authorizedUser.dn,
-  });
-  res.cookie('user_token', token, {
-    httpOnly: true,
-    sameSite: 'strict',
-    secure: process.env.COOKIE_SECURE === 'true',
-    maxAge: 2 * 60 * 60 * 1000,
-  });
-  res.json({ ok: true, username, domain: domain.name, features: featuresFor(domain) });
+  }, ttl);
+  res.cookie('user_token', token, sessionCookieOptions(ttl));
+  res.json({ ok: true, username, domain: domain.name, features: featuresFor(domain), sessionTimeoutSeconds: ttl });
 });
 
 router.post('/logout', (req, res) => {
@@ -99,6 +100,7 @@ router.post('/logout', (req, res) => {
     audit.logEvent(req, {
       domainId: data.domainId, domainLabel: domain ? domain.name : null, eventType: 'logout',
       actorUsername: data.username, success: true,
+      detail: req.body && req.body.reason === 'timeout' ? 'Signed out automatically after session timeout' : null,
     });
   }
   res.clearCookie('user_token');
@@ -114,7 +116,8 @@ router.get('/me', (req, res) => {
   if (!domain || !domain.enabled) {
     return res.status(401).json({ error: 'Domain disabled' });
   }
-  res.json({ username: data.username, domain: domain.name, features: featuresFor(domain) });
+  const ttl = refreshSession(res, data);
+  res.json({ username: data.username, domain: domain.name, features: featuresFor(domain), sessionTimeoutSeconds: ttl });
 });
 
 module.exports = router;

@@ -59,6 +59,10 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+// Lightweight no-op used by the browser to keep an active session alive; the
+// auth middleware has already refreshed the session cookie by the time this runs.
+router.post('/keepalive', (req, res) => res.json({ ok: true }));
+
 router.post('/:id/unlock', async (req, res) => {
   let domain;
   try {

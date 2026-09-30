@@ -8,6 +8,7 @@ const mailer = require('../mailer');
 const templates = require('../templates');
 const cryptoHelper = require('../crypto');
 const { hashPassword } = require('../auth');
+const sessionConfig = require('../sessionConfig');
 
 function parseJsonArray(json, fallback) {
   try {
@@ -330,6 +331,27 @@ router.put('/settings', (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------- Session timeouts (global; user and admin portals are independent) ----------
+
+router.get('/session-config', (req, res) => {
+  res.json({ ...sessionConfig.get(), min: sessionConfig.MIN_MINUTES, max: sessionConfig.MAX_MINUTES });
+});
+
+router.put('/session-config', (req, res) => {
+  try {
+    const cfg = sessionConfig.set(req.body || {});
+    logger.info('session_config_updated', { requestId: req.id, admin: req.admin.username, ...cfg });
+    res.json({ ...cfg, min: sessionConfig.MIN_MINUTES, max: sessionConfig.MAX_MINUTES });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message, requestId: req.id });
+  }
+});
+
+// Lightweight no-op used by the browser to keep an active session alive;
+// the auth middleware has already refreshed the session cookie by the time
+// this runs.
+router.post('/keepalive', (req, res) => res.json({ ok: true }));
+
 // ---------- Global email alert settings ----------
 
 router.get('/alerts', (req, res) => {
@@ -344,6 +366,7 @@ router.put('/alerts', (req, res) => {
   const passwordEnc = providedPassword ? cryptoHelper.encrypt(providedPassword) : existing.smtp.passwordEnc;
   const newCfg = {
     enabled: !!b.enabled,
+    onLoginSuccess: b.onLoginSuccess !== undefined ? !!b.onLoginSuccess : existing.onLoginSuccess,
     onLoginFailure: b.onLoginFailure !== undefined ? !!b.onLoginFailure : existing.onLoginFailure,
     onAccountAction: b.onAccountAction !== undefined ? !!b.onAccountAction : existing.onAccountAction,
     recipients: b.recipients !== undefined ? normalizeStringArray(b.recipients) : existing.recipients,
@@ -680,6 +703,7 @@ router.get('/templates', (req, res) => {
 });
 
 const SAMPLE_VARS = {
+  login_success: { username: 'jdoe@contoso.com', domain: 'Contoso', ip: '203.0.113.7', time: new Date().toISOString() },
   login_failure: { username: 'jdoe@contoso.com', domain: 'Contoso', reason: 'Invalid credentials', ip: '203.0.113.7', time: new Date().toISOString() },
   account_action: { action: 'Account unlock', result: 'Success', target: 'jdoe', actor: 'helpdesk1@contoso.com', domain: 'Contoso', detail: '', ip: '203.0.113.7', time: new Date().toISOString() },
 };

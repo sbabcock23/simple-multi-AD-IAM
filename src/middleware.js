@@ -1,4 +1,4 @@
-const { verifyToken } = require('./auth');
+const { verifyToken, refreshSession } = require('./auth');
 const cryptoHelper = require('./crypto');
 const logger = require('./logger');
 
@@ -10,6 +10,7 @@ function requireAdminAuth(req, res, next) {
     return res.status(401).json({ error: 'Not authenticated' });
   }
   req.admin = data;
+  refreshSession(res, data);
   next();
 }
 
@@ -36,6 +37,7 @@ function requireUserAuth(req, res, next) {
   // at login time (regardless of whether they typed their UPN, email, or
   // sAMAccountName) - using it for every later bind is always reliable.
   req.user = { username: data.username, domainId: data.domainId, password, ldapBindDn: data.bindDn };
+  refreshSession(res, data);
   next();
 }
 
