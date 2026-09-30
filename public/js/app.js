@@ -77,7 +77,7 @@ function showApp(me) {
   $('#appView').classList.remove('hidden');
   $('#userInfo').classList.remove('hidden');
   $('#userLabel').textContent = `${me.username} (${me.domain})`;
-  loadActivity();
+  loadActivity(1);
 }
 
 $('#loginForm').addEventListener('submit', async (e) => {
@@ -167,7 +167,7 @@ $('#unlockBtn').addEventListener('click', async () => {
   } catch (e) {
     showNotice('Unlock failed', e.message, true);
   } finally {
-    loadActivity();
+    loadActivity(1);
   }
 });
 
@@ -197,7 +197,7 @@ $('#confirmReset').addEventListener('click', async () => {
   } catch (e) {
     showResetError(e.message);
   } finally {
-    loadActivity();
+    loadActivity(1);
   }
 });
 
@@ -226,10 +226,42 @@ function showMessage(msg, isError) {
 
 // ---------- My activity ----------
 
-async function loadActivity() {
+const PAGE_SIZES = [25, 50, 100];
+
+// Renders "Showing x-y of n", a rows-per-page selector, and Previous/Next.
+function renderPager(container, state, onChange) {
+  if (!state.total) { container.innerHTML = ''; return; }
+  const start = (state.page - 1) * state.pageSize + 1;
+  const end = Math.min(state.total, state.page * state.pageSize);
+  container.innerHTML = `
+    <span class="muted">Showing ${start}–${end} of ${state.total}</span>
+    <span class="pager-controls">
+      <label class="pager-size">Rows per page
+        <select class="pager-size-select">${PAGE_SIZES.map((n) => `<option value="${n}" ${n === state.pageSize ? 'selected' : ''}>${n}</option>`).join('')}</select>
+      </label>
+      <button type="button" class="btn-secondary pager-prev" ${state.page <= 1 ? 'disabled' : ''}>Previous</button>
+      <span class="muted">Page ${state.page} of ${state.totalPages}</span>
+      <button type="button" class="btn-secondary pager-next" ${state.page >= state.totalPages ? 'disabled' : ''}>Next</button>
+    </span>`;
+  container.querySelector('.pager-size-select').addEventListener('change', (e) => onChange({ page: 1, pageSize: Number(e.target.value) }));
+  container.querySelector('.pager-prev').addEventListener('click', () => onChange({ page: state.page - 1, pageSize: state.pageSize }));
+  container.querySelector('.pager-next').addEventListener('click', () => onChange({ page: state.page + 1, pageSize: state.pageSize }));
+}
+
+const activityState = { page: 1, pageSize: 25 };
+
+// Pass a page number to jump to it; new actions call loadActivity(1) so the
+// newest entry (listed first) is visible.
+async function loadActivity(page = activityState.page) {
   try {
-    const rows = await api('/api/users/audit');
-    renderActivity(rows);
+    const result = await api(`/api/users/audit?page=${page}&pageSize=${activityState.pageSize}`);
+    activityState.page = result.page;
+    activityState.pageSize = result.pageSize;
+    renderActivity(result.rows);
+    renderPager($('#activityPager'), result, (next) => {
+      activityState.pageSize = next.pageSize;
+      loadActivity(next.page);
+    });
   } catch (e) {
     $('#activityTable').innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`;
   }
@@ -264,7 +296,7 @@ function activityRowHtml(r) {
   </tr>`;
 }
 
-$('#refreshActivityBtn').addEventListener('click', loadActivity);
+$('#refreshActivityBtn').addEventListener('click', () => loadActivity());
 
 function escapeHtml(str) {
   const div = document.createElement('div');

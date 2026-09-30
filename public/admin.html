@@ -46,6 +46,10 @@
     <h4>Audit logging</h4>
     <label class="checkbox"><input type="checkbox" id="globalAuditEnabled"/> Enable audit logging (global)</label>
     <p class="muted" style="margin-top:0;">Each domain also has its own audit toggle in its edit form, which only matters while this is on.</p>
+    <label>Audit log retention (days)
+      <input type="number" id="gAuditRetention" min="0" max="3650" step="1" autocomplete="off" style="max-width:200px;"/>
+    </label>
+    <p class="muted" style="margin-top:0;">Audit records older than this are deleted automatically (checked hourly). Enter 0 to keep records forever. Lowering the value deletes older records as soon as you save.</p>
 
     <h4>Session timeouts</h4>
     <p class="muted" style="margin-top:0;">Signed-in users are logged out automatically after this many minutes of inactivity. The user portal and the admin portal are set independently. Changes apply to existing sessions on their next request.</p>
@@ -149,6 +153,7 @@
       </label>
     </div>
     <div id="auditTable" style="margin-top:12px; overflow-x:auto;"></div>
+    <div id="auditPager" class="pager"></div>
   </div>
 
   <div class="card">

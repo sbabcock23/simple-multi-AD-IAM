@@ -9,6 +9,7 @@ const templates = require('../templates');
 const cryptoHelper = require('../crypto');
 const { hashPassword } = require('../auth');
 const sessionConfig = require('../sessionConfig');
+const auditRetention = require('../auditRetention');
 
 function parseJsonArray(json, fallback) {
   try {
@@ -439,11 +440,42 @@ function buildAuditQuery(query) {
   return { sql, params };
 }
 
+const PAGE_SIZES = [25, 50, 100];
+
+// Shared by the admin audit log and the user's own activity list.
+function parsePaging(query) {
+  const requested = parseInt(query.pageSize, 10);
+  const pageSize = PAGE_SIZES.includes(requested) ? requested : PAGE_SIZES[0];
+  const page = Math.max(1, parseInt(query.page, 10) || 1);
+  return { pageSize, page };
+}
+
 router.get('/audit', (req, res) => {
   const { sql, params } = buildAuditQuery(req.query);
-  const limit = Math.min(parseInt(req.query.limit, 10) || 200, 1000);
-  const rows = db.prepare(`${sql} ORDER BY created_at DESC LIMIT ?`).all(...params, limit);
-  res.json(rows);
+  const { pageSize, page: requestedPage } = parsePaging(req.query);
+  const total = db.prepare(sql.replace('SELECT *', 'SELECT COUNT(*) AS n')).get(...params).n;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const page = Math.min(requestedPage, totalPages);
+  const rows = db.prepare(`${sql} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
+    .all(...params, pageSize, (page - 1) * pageSize);
+  res.json({ rows, total, page, pageSize, totalPages });
+});
+
+// ---------- Audit retention ----------
+
+router.get('/audit-retention', (req, res) => {
+  res.json({ days: auditRetention.getDays(), max: auditRetention.MAX_DAYS });
+});
+
+router.put('/audit-retention', (req, res) => {
+  try {
+    const days = auditRetention.setDays((req.body || {}).days);
+    const { deleted } = auditRetention.purge();
+    logger.info('audit_retention_updated', { requestId: req.id, admin: req.admin.username, days, deleted });
+    res.json({ days, deleted, max: auditRetention.MAX_DAYS });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message, requestId: req.id });
+  }
 });
 
 function csvEscape(val) {

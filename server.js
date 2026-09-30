@@ -140,6 +140,7 @@ adminApp.get('/', (req, res) => sendStaticFile(res, path.join(PUBLIC_DIR, 'admin
 attachErrorHandler(adminApp);
 
 const USER_PORT = process.env.PORT || 3000;
+require('./src/auditRetention').startScheduler();
 const ADMIN_PORT = process.env.ADMIN_PORT || 3001;
 
 userApp.listen(USER_PORT, () => {

@@ -364,12 +364,17 @@ async function deleteDomain(id) {
 
 // ---------- Global settings ----------
 
+let savedRetentionDays = 0;
+
 async function loadSettings() {
-  const [s, alerts, sessions] = await Promise.all([
+  const [s, alerts, sessions, retention] = await Promise.all([
     api('/api/admin/settings'),
     api('/api/admin/alerts'),
     api('/api/admin/session-config'),
+    api('/api/admin/audit-retention'),
   ]);
+  savedRetentionDays = retention.days;
+  $('#gAuditRetention').value = retention.days;
   $('#gUserTimeout').value = sessions.userTimeoutMinutes;
   $('#gAdminTimeout').value = sessions.adminTimeoutMinutes;
   $('#globalAuditEnabled').checked = !!s.auditLoggingEnabled;
@@ -400,6 +405,13 @@ $('#saveSettingsBtn').addEventListener('click', async () => {
 });
 
 async function saveGlobalSettings() {
+  // Shortening retention deletes existing records immediately, so confirm first.
+  const days = Number($('#gAuditRetention').value);
+  if (days > 0 && (savedRetentionDays === 0 || days < savedRetentionDays)) {
+    const ok = confirm(`Audit records older than ${days} day(s) will be permanently deleted now and on an ongoing basis. Continue?`);
+    if (!ok) return;
+  }
+  await api('/api/admin/audit-retention', { method: 'PUT', body: JSON.stringify({ days }) });
   // Validate/save session timeouts first so a bad value stops the save before anything else changes.
   await api('/api/admin/session-config', {
     method: 'PUT',
@@ -469,10 +481,49 @@ function auditQueryParams() {
   return params;
 }
 
+const PAGE_SIZES = [25, 50, 100];
+
+// Renders "Showing x-y of n", a rows-per-page selector, and Previous/Next.
+function renderPager(container, state, onChange) {
+  if (!state.total) { container.innerHTML = ''; return; }
+  const start = (state.page - 1) * state.pageSize + 1;
+  const end = Math.min(state.total, state.page * state.pageSize);
+  container.innerHTML = `
+    <span class="muted">Showing ${start}–${end} of ${state.total}</span>
+    <span class="pager-controls">
+      <label class="pager-size">Rows per page
+        <select class="pager-size-select">${PAGE_SIZES.map((n) => `<option value="${n}" ${n === state.pageSize ? 'selected' : ''}>${n}</option>`).join('')}</select>
+      </label>
+      <button type="button" class="btn-secondary pager-prev" ${state.page <= 1 ? 'disabled' : ''}>Previous</button>
+      <span class="muted">Page ${state.page} of ${state.totalPages}</span>
+      <button type="button" class="btn-secondary pager-next" ${state.page >= state.totalPages ? 'disabled' : ''}>Next</button>
+    </span>`;
+  container.querySelector('.pager-size-select').addEventListener('change', (e) => onChange({ page: 1, pageSize: Number(e.target.value) }));
+  container.querySelector('.pager-prev').addEventListener('click', () => onChange({ page: state.page - 1, pageSize: state.pageSize }));
+  container.querySelector('.pager-next').addEventListener('click', () => onChange({ page: state.page + 1, pageSize: state.pageSize }));
+}
+
+const auditState = { page: 1, pageSize: 25 };
+
 async function loadAuditLog() {
   const params = auditQueryParams();
-  const rows = await api('/api/admin/audit?' + params.toString());
-  renderAuditTable(rows);
+  params.set('page', auditState.page);
+  params.set('pageSize', auditState.pageSize);
+  const result = await api('/api/admin/audit?' + params.toString());
+  auditState.page = result.page;
+  auditState.pageSize = result.pageSize;
+  renderAuditTable(result.rows);
+  renderPager($('#auditPager'), result, (next) => {
+    auditState.page = next.page;
+    auditState.pageSize = next.pageSize;
+    loadAuditLog();
+  });
+}
+
+// Changing a filter always starts again from the first page.
+function reloadAuditFromStart() {
+  auditState.page = 1;
+  loadAuditLog();
 }
 
 function renderAuditTable(rows) {
@@ -500,9 +551,9 @@ function auditRowHtml(r) {
 }
 
 $('#refreshAuditBtn').addEventListener('click', loadAuditLog);
-$('#auditDomainFilter').addEventListener('change', loadAuditLog);
-$('#auditEventFilter').addEventListener('change', loadAuditLog);
-$('#auditResultFilter').addEventListener('change', loadAuditLog);
+$('#auditDomainFilter').addEventListener('change', reloadAuditFromStart);
+$('#auditEventFilter').addEventListener('change', reloadAuditFromStart);
+$('#auditResultFilter').addEventListener('change', reloadAuditFromStart);
 
 $('#downloadAuditBtn').addEventListener('click', () => {
   const params = auditQueryParams();

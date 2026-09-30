@@ -130,6 +130,14 @@ global master switch, the global type toggle, the domain switch, and the
 domain type toggle are all on. Notifications go to the configured recipient
 list (domain recipients override the global list).
 
+## Audit log retention and paging
+
+Admin → Global settings → **Audit log retention (days)** deletes audit
+records older than the given number of days (checked hourly and when the
+setting is saved). `0` keeps records forever, which is the default. The admin
+audit log and each user's **My activity** list show 25 rows per page by
+default, with 50 and 100 available, and page through the rest.
+
 ## Session timeouts
 
 Admin → Global settings → **Session timeouts** sets an inactivity timeout in
