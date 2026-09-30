@@ -1,5 +1,25 @@
 const $ = (sel) => document.querySelector(sel);
 
+const EXPIRED_FLAG = 'iam_session_expired';
+
+// Signs the browser out when the idle timeout elapses: ends the server session
+// (best effort), remembers why, and reloads so no user data is left on screen.
+const sessionGuard = createSessionGuard({
+  storageKey: 'iam_user_last_activity',
+  keepalive: () => api('/api/users/keepalive', { method: 'POST' }),
+  onExpire: async () => {
+    try {
+      await fetch('/api/auth/logout', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: 'timeout' }),
+      });
+    } catch (e) { /* server session ends on its own anyway */ }
+    try { sessionStorage.setItem(EXPIRED_FLAG, '1'); } catch (e) { /* ignore */ }
+    location.reload();
+  },
+});
+
 let currentFeatures = {};
 let selectedUser = null;
 
@@ -10,6 +30,16 @@ async function api(path, opts = {}) {
     ...opts,
   });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && sessionGuard.isRunning() && path !== '/api/auth/login') {
+    // The server ended the session (timeout) while the page was open.
+    sessionGuard.expire();
+    throw new Error('Your session has expired. Please sign in again.');
+  }
+  if (res.ok) {
+    const ttl = Number(res.headers.get('X-Session-Timeout'));
+    if (ttl) sessionGuard.setTimeoutSeconds(ttl);
+    if (path !== '/api/auth/login') sessionGuard.noteRequest();
+  }
   if (!res.ok) {
     const requestId = data.requestId || res.headers.get('X-Request-Id');
     const message = data.error || 'Request failed';
@@ -28,6 +58,13 @@ async function checkSession() {
 }
 
 function showLogin() {
+  try {
+    if (sessionStorage.getItem(EXPIRED_FLAG)) {
+      sessionStorage.removeItem(EXPIRED_FLAG);
+      $('#loginNotice').textContent = 'You were signed out because your session timed out. Please sign in again.';
+      $('#loginNotice').classList.remove('hidden');
+    }
+  } catch (e) { /* ignore */ }
   $('#loginView').classList.remove('hidden');
   $('#appView').classList.add('hidden');
   $('#userInfo').classList.add('hidden');
@@ -35,11 +72,12 @@ function showLogin() {
 
 function showApp(me) {
   currentFeatures = me.features;
+  sessionGuard.start(me.sessionTimeoutSeconds);
   $('#loginView').classList.add('hidden');
   $('#appView').classList.remove('hidden');
   $('#userInfo').classList.remove('hidden');
   $('#userLabel').textContent = `${me.username} (${me.domain})`;
-  loadActivity();
+  loadActivity(1);
 }
 
 const MFA_ERROR_MESSAGES = {
@@ -82,14 +120,15 @@ $('#loginForm').addEventListener('submit', async (e) => {
 });
 
 $('#logoutBtn').addEventListener('click', async () => {
+  sessionGuard.stop();
   await api('/api/auth/logout', { method: 'POST' });
   location.reload();
 });
 
 let searchTimeout;
-$('#searchInput').addEventListener('input', () => {
+$('#userLookupQuery').addEventListener('input', () => {
   clearTimeout(searchTimeout);
-  const q = $('#searchInput').value.trim();
+  const q = $('#userLookupQuery').value.trim();
   if (q.length < 2) { $('#searchResults').innerHTML = ''; return; }
   searchTimeout = setTimeout(() => runSearch(q), 300);
 });
@@ -118,6 +157,7 @@ function renderResults(results) {
       <div class="badges">
         ${u.locked ? '<span class="badge badge-locked">Locked</span>' : ''}
         ${u.disabled ? '<span class="badge badge-disabled">Disabled</span>' : ''}
+        ${!u.locked && !u.disabled ? '<span class="badge badge-ok">Active</span>' : ''}
       </div>`;
     div.addEventListener('click', () => selectUser(u));
     container.appendChild(div);
@@ -128,24 +168,31 @@ function selectUser(u) {
   selectedUser = u;
   $('#selectedUserCard').classList.remove('hidden');
   $('#selUserName').textContent = u.displayName || u.cn;
-  $('#selUserMeta').textContent =
-    `${u.userPrincipalName || u.sAMAccountName}${u.locked ? ' · Locked' : ''}${u.disabled ? ' · Disabled' : ''}`;
+  const isActive = !u.locked && !u.disabled;
+  $('#selUserMeta').innerHTML =
+    `${escapeHtml(u.userPrincipalName || u.sAMAccountName)}${u.locked ? ' · Locked' : ''}${u.disabled ? ' · Disabled' : ''}` +
+    `${isActive ? ' · <span class="badge badge-ok">Active</span>' : ''}`;
   $('#unlockBtn').classList.toggle('hidden', !currentFeatures.unlock);
+  // Nothing to unlock unless the account is actually locked.
+  $('#unlockBtn').disabled = !u.locked;
+  $('#unlockBtn').title = u.locked ? '' : 'This account is not locked';
   $('#resetBtn').classList.toggle('hidden', !currentFeatures.reset);
   $('#actionMessage').classList.add('hidden');
 }
 
 $('#unlockBtn').addEventListener('click', async () => {
-  if (!selectedUser) return;
+  if (!selectedUser || !selectedUser.locked) return;
+  const name = selectedUser.displayName || selectedUser.cn;
   try {
     await api(`/api/users/${encodeURIComponent(selectedUser.sAMAccountName)}/unlock`, { method: 'POST' });
-    showMessage('Account unlocked successfully.', false);
+    showNotice('Account unlocked', `The account for ${name} has been unlocked.`, false);
     const refreshed = await api(`/api/users/${encodeURIComponent(selectedUser.sAMAccountName)}`);
     selectUser(refreshed);
+    if ($('#userLookupQuery').value.trim().length >= 2) runSearch($('#userLookupQuery').value.trim());
   } catch (e) {
-    showMessage(e.message, true);
+    showNotice('Unlock failed', e.message, true);
   } finally {
-    loadActivity();
+    loadActivity(1);
   }
 });
 
@@ -171,11 +218,11 @@ $('#confirmReset').addEventListener('click', async () => {
       body: JSON.stringify({ newPassword: p1, forceChange: $('#forceChange').checked }),
     });
     $('#resetModal').classList.add('hidden');
-    showMessage('Password reset successfully.', false);
+    showNotice('Password reset', `The password for ${selectedUser.displayName || selectedUser.cn} has been reset.`, false);
   } catch (e) {
     showResetError(e.message);
   } finally {
-    loadActivity();
+    loadActivity(1);
   }
 });
 
@@ -183,6 +230,18 @@ function showResetError(msg) {
   $('#resetError').textContent = msg;
   $('#resetError').classList.remove('hidden');
 }
+
+function showNotice(title, text, isError) {
+  $('#noticeTitle').textContent = title;
+  $('#noticeText').textContent = text;
+  const icon = $('#noticeIcon');
+  icon.className = 'notice-icon ' + (isError ? 'err' : 'ok');
+  icon.innerHTML = isError ? '&#10007;' : '&#10003;';
+  $('#noticeModal').classList.remove('hidden');
+  $('#noticeOk').focus();
+}
+
+$('#noticeOk').addEventListener('click', () => $('#noticeModal').classList.add('hidden'));
 
 function showMessage(msg, isError) {
   const el = $('#actionMessage');
@@ -192,10 +251,42 @@ function showMessage(msg, isError) {
 
 // ---------- My activity ----------
 
-async function loadActivity() {
+const PAGE_SIZES = [25, 50, 100];
+
+// Renders "Showing x-y of n", a rows-per-page selector, and Previous/Next.
+function renderPager(container, state, onChange) {
+  if (!state.total) { container.innerHTML = ''; return; }
+  const start = (state.page - 1) * state.pageSize + 1;
+  const end = Math.min(state.total, state.page * state.pageSize);
+  container.innerHTML = `
+    <span class="muted">Showing ${start}–${end} of ${state.total}</span>
+    <span class="pager-controls">
+      <label class="pager-size">Rows per page
+        <select class="pager-size-select">${PAGE_SIZES.map((n) => `<option value="${n}" ${n === state.pageSize ? 'selected' : ''}>${n}</option>`).join('')}</select>
+      </label>
+      <button type="button" class="btn-secondary pager-prev" ${state.page <= 1 ? 'disabled' : ''}>Previous</button>
+      <span class="muted">Page ${state.page} of ${state.totalPages}</span>
+      <button type="button" class="btn-secondary pager-next" ${state.page >= state.totalPages ? 'disabled' : ''}>Next</button>
+    </span>`;
+  container.querySelector('.pager-size-select').addEventListener('change', (e) => onChange({ page: 1, pageSize: Number(e.target.value) }));
+  container.querySelector('.pager-prev').addEventListener('click', () => onChange({ page: state.page - 1, pageSize: state.pageSize }));
+  container.querySelector('.pager-next').addEventListener('click', () => onChange({ page: state.page + 1, pageSize: state.pageSize }));
+}
+
+const activityState = { page: 1, pageSize: 25 };
+
+// Pass a page number to jump to it; new actions call loadActivity(1) so the
+// newest entry (listed first) is visible.
+async function loadActivity(page = activityState.page) {
   try {
-    const rows = await api('/api/users/audit');
-    renderActivity(rows);
+    const result = await api(`/api/users/audit?page=${page}&pageSize=${activityState.pageSize}`);
+    activityState.page = result.page;
+    activityState.pageSize = result.pageSize;
+    renderActivity(result.rows);
+    renderPager($('#activityPager'), result, (next) => {
+      activityState.pageSize = next.pageSize;
+      loadActivity(next.page);
+    });
   } catch (e) {
     $('#activityTable').innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`;
   }
@@ -231,7 +322,7 @@ function activityRowHtml(r) {
   </tr>`;
 }
 
-$('#refreshActivityBtn').addEventListener('click', loadActivity);
+$('#refreshActivityBtn').addEventListener('click', () => loadActivity());
 
 function escapeHtml(str) {
   const div = document.createElement('div');
@@ -239,5 +330,15 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+async function loadVersion() {
+  try {
+    const v = await api('/api/version');
+    $('#appVersion').textContent = v.version;
+  } catch (e) {
+    $('#appVersion').textContent = 'unknown';
+  }
+}
+
+loadVersion();
 showLoginErrorFromQuery();
 checkSession();

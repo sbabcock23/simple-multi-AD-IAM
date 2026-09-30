@@ -1,6 +1,6 @@
 {
   "name": "iam-self-service",
-  "version": "1.0.0",
+  "version": "1.4.0",
   "description": "Multi-domain Active Directory self-service portal for account unlock and password reset",
   "main": "server.js",
   "scripts": {
@@ -17,6 +17,6 @@
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
     "ldapjs": "^3.0.7",
-    "nodemailer": "^6.9.15"
+    "nodemailer": "^10.0.12"
   }
 }

@@ -151,6 +151,41 @@ until Duo confirms the second factor.
 - **User portal → My activity**: each signed-in user sees their own login
   and action history (current session and past), but never other users'.
 
+## Email notifications
+
+Three notification types are available, each with its own customizable
+subject/body template (**Admin → Email templates**, or files under the
+templates directory):
+
+| Type | Template | Default |
+| --- | --- | --- |
+| Successful login | `login_success` (`{{username}} {{domain}} {{ip}} {{time}}`) | Off |
+| Failed login | `login_failure` | On |
+| Account action (unlock / password reset) | `account_action` | On |
+
+Each type is switched on or off **globally** (Admin → Global settings) and
+again **per domain** (domain edit form). A notification is sent only when the
+global master switch, the global type toggle, the domain switch, and the
+domain type toggle are all on. Notifications go to the configured recipient
+list (domain recipients override the global list).
+
+## Audit log retention and paging
+
+Admin → Global settings → **Audit log retention (days)** deletes audit
+records older than the given number of days (checked hourly and when the
+setting is saved). `0` keeps records forever, which is the default. The admin
+audit log and each user's **My activity** list show 25 rows per page by
+default, with 50 and 100 available, and page through the rest.
+
+## Session timeouts
+
+Admin → Global settings → **Session timeouts** sets an inactivity timeout in
+minutes (5–1440) separately for the **user portal** (default 120) and the
+**admin portal** (default 480). Activity keeps a session alive; after the
+timeout the browser signs the person out automatically and the login page
+explains why. The server enforces the same timeout on the session cookie.
+Changes apply to existing sessions on their next request.
+
 ## Required Active Directory setup
 
 For each domain you add:
@@ -294,7 +329,8 @@ actual client IP.
   Traefik, or a load balancer) in any real deployment, and set
   `COOKIE_SECURE=true` once you do.
 - The end user's AD password is kept only inside their own encrypted,
-  signed, httpOnly session cookie for up to 2 hours, and is never written
+  signed, httpOnly session cookie for as long as the session lasts (see
+  *Session timeouts* below), and is never written
   to disk or logged. Protect `ENCRYPTION_KEY` and `JWT_SECRET` the same way
   you'd protect any credential-bearing secret (e.g. via your orchestrator's
   secret store rather than committing them to source control).
@@ -331,15 +367,17 @@ src/db.js                  SQLite schema, defaults, and migrations
 src/domains.js             Reads domain config rows (parses ldap_urls JSON)
 src/audit.js                Writes audit log entries, respecting global/per-domain toggles
 src/crypto.js               AES-256-GCM encryption helpers
-src/auth.js                Password hashing + JWT session helpers
+src/auth.js                Password hashing + JWT session helpers (user, admin, and short-lived MFA-pending tokens)
+src/sessionConfig.js       Admin-configurable inactivity timeouts for the user and admin portals
+src/auditRetention.js      Scheduled purge of audit records older than the configured retention
 src/middleware.js          Route guards; decrypts the cached AD password for user sessions
 src/ldap.js                All LDAP/AD operations, bound as the signed-in user, with multi-server failover
+src/routes/adminAuth.js    Admin login/logout
 src/mailer.js              SMTP alert sending (global/per-domain SMTP + recipients)
 src/templates.js           Email template resolution (GUI override -> filesystem file -> built-in default)
 src/duo.js                 Cisco Duo Universal Prompt integration (global/per-domain config resolution)
-src/routes/adminAuth.js    Admin login/logout
 src/routes/adminApi.js     Domain, settings, audit log, reports, templates, and admin-user management API
 src/routes/userAuth.js     End-user login + Duo MFA challenge/callback + audit logging
 src/routes/userApi.js      End-user search/unlock/reset API + "my activity" audit feed
-public/                    Static frontend (user portal on its own port, admin portal on its own port)
+public/                    Static frontend (user portal + admin portal; js/session.js is the shared idle-timeout guard)
 ```

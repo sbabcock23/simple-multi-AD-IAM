@@ -22,6 +22,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
+const APP_VERSION = require('./package.json').version;
 
 const trustProxySetting = process.env.TRUST_PROXY;
 function applyTrustProxy(app) {
@@ -58,7 +59,7 @@ function createBaseApp(name) {
   const app = express();
   app.disable('x-powered-by');
   applyTrustProxy(app);
-  app.use(helmet({ contentSecurityPolicy: false }));
+  app.use(helmet());
   app.use(express.json());
   app.use(cookieParser());
 
@@ -77,6 +78,7 @@ function createBaseApp(name) {
   });
 
   app.get('/api/health', (req, res) => res.json({ ok: true, app: name }));
+  app.get('/api/version', (req, res) => res.json({ version: APP_VERSION }));
 
   return app;
 }
@@ -111,9 +113,12 @@ if (adminCount === 0) {
 // this app at all.
 // ---------------------------------------------------------------------
 const userApp = createBaseApp('user');
-userApp.use('/api/auth', createAuthLimiter(), require('./src/routes/userAuth'));
+userApp.use('/api/auth/login', createAuthLimiter());
+userApp.use('/api/auth/duo-callback', createAuthLimiter());
+userApp.use('/api/auth', require('./src/routes/userAuth'));
 userApp.use('/api/users', requireUserAuth, require('./src/routes/userApi'));
 userApp.get('/css/style.css', (req, res) => sendStaticFile(res, path.join(PUBLIC_DIR, 'css', 'style.css')));
+userApp.get('/js/session.js', (req, res) => sendStaticFile(res, path.join(PUBLIC_DIR, 'js', 'session.js')));
 userApp.get('/js/app.js', (req, res) => sendStaticFile(res, path.join(PUBLIC_DIR, 'js', 'app.js')));
 userApp.get('/', (req, res) => sendStaticFile(res, path.join(PUBLIC_DIR, 'index.html')));
 attachErrorHandler(userApp);
@@ -124,14 +129,19 @@ attachErrorHandler(userApp);
 // this port, and vice versa.
 // ---------------------------------------------------------------------
 const adminApp = createBaseApp('admin');
-adminApp.use('/api/admin', createAuthLimiter(), require('./src/routes/adminAuth'));
+// Rate-limit only the login endpoint, not every admin API call (the browser's
+// session keep-alive and normal page loads would otherwise exhaust the limit).
+adminApp.use('/api/admin/login', createAuthLimiter());
+adminApp.use('/api/admin', require('./src/routes/adminAuth'));
 adminApp.use('/api/admin', requireAdminAuth, require('./src/routes/adminApi'));
 adminApp.get('/css/style.css', (req, res) => sendStaticFile(res, path.join(PUBLIC_DIR, 'css', 'style.css')));
+adminApp.get('/js/session.js', (req, res) => sendStaticFile(res, path.join(PUBLIC_DIR, 'js', 'session.js')));
 adminApp.get('/js/admin.js', (req, res) => sendStaticFile(res, path.join(PUBLIC_DIR, 'js', 'admin.js')));
 adminApp.get('/', (req, res) => sendStaticFile(res, path.join(PUBLIC_DIR, 'admin.html')));
 attachErrorHandler(adminApp);
 
 const USER_PORT = process.env.PORT || 3000;
+require('./src/auditRetention').startScheduler();
 const ADMIN_PORT = process.env.ADMIN_PORT || 3001;
 
 userApp.listen(USER_PORT, () => {

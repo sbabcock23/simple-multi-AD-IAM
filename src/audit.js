@@ -18,7 +18,7 @@ function getClientIp(req) {
   return (req.socket && req.socket.remoteAddress) || req.ip || '';
 }
 
-// eventType: 'login' | 'logout' | 'search' | 'unlock' | 'reset_password'
+// eventType: 'login' | 'logout' | 'search' | 'unlock' | 'reset_password' | 'mfa_challenge'
 function logEvent(req, { domainId = null, domainLabel = null, eventType, actorUsername, targetIdentifier = null, success, detail = null }) {
   try {
     if (!isGlobalAuditEnabled()) return;

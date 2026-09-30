@@ -9,6 +9,8 @@ const duo = require('../duo');
 const templates = require('../templates');
 const cryptoHelper = require('../crypto');
 const { hashPassword } = require('../auth');
+const sessionConfig = require('../sessionConfig');
+const auditRetention = require('../auditRetention');
 
 function parseJsonArray(json, fallback) {
   try {
@@ -355,6 +357,27 @@ router.put('/settings', (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------- Session timeouts (global; user and admin portals are independent) ----------
+
+router.get('/session-config', (req, res) => {
+  res.json({ ...sessionConfig.get(), min: sessionConfig.MIN_MINUTES, max: sessionConfig.MAX_MINUTES });
+});
+
+router.put('/session-config', (req, res) => {
+  try {
+    const cfg = sessionConfig.set(req.body || {});
+    logger.info('session_config_updated', { requestId: req.id, admin: req.admin.username, ...cfg });
+    res.json({ ...cfg, min: sessionConfig.MIN_MINUTES, max: sessionConfig.MAX_MINUTES });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message, requestId: req.id });
+  }
+});
+
+// Lightweight no-op used by the browser to keep an active session alive;
+// the auth middleware has already refreshed the session cookie by the time
+// this runs.
+router.post('/keepalive', (req, res) => res.json({ ok: true }));
+
 // ---------- Global email alert settings ----------
 
 router.get('/alerts', (req, res) => {
@@ -369,6 +392,7 @@ router.put('/alerts', (req, res) => {
   const passwordEnc = providedPassword ? cryptoHelper.encrypt(providedPassword) : existing.smtp.passwordEnc;
   const newCfg = {
     enabled: !!b.enabled,
+    onLoginSuccess: b.onLoginSuccess !== undefined ? !!b.onLoginSuccess : existing.onLoginSuccess,
     onLoginFailure: b.onLoginFailure !== undefined ? !!b.onLoginFailure : existing.onLoginFailure,
     onAccountAction: b.onAccountAction !== undefined ? !!b.onAccountAction : existing.onAccountAction,
     recipients: b.recipients !== undefined ? normalizeStringArray(b.recipients) : existing.recipients,
@@ -497,11 +521,42 @@ function buildAuditQuery(query) {
   return { sql, params };
 }
 
+const PAGE_SIZES = [25, 50, 100];
+
+// Shared by the admin audit log and the user's own activity list.
+function parsePaging(query) {
+  const requested = parseInt(query.pageSize, 10);
+  const pageSize = PAGE_SIZES.includes(requested) ? requested : PAGE_SIZES[0];
+  const page = Math.max(1, parseInt(query.page, 10) || 1);
+  return { pageSize, page };
+}
+
 router.get('/audit', (req, res) => {
   const { sql, params } = buildAuditQuery(req.query);
-  const limit = Math.min(parseInt(req.query.limit, 10) || 200, 1000);
-  const rows = db.prepare(`${sql} ORDER BY created_at DESC LIMIT ?`).all(...params, limit);
-  res.json(rows);
+  const { pageSize, page: requestedPage } = parsePaging(req.query);
+  const total = db.prepare(sql.replace('SELECT *', 'SELECT COUNT(*) AS n')).get(...params).n;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const page = Math.min(requestedPage, totalPages);
+  const rows = db.prepare(`${sql} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
+    .all(...params, pageSize, (page - 1) * pageSize);
+  res.json({ rows, total, page, pageSize, totalPages });
+});
+
+// ---------- Audit retention ----------
+
+router.get('/audit-retention', (req, res) => {
+  res.json({ days: auditRetention.getDays(), max: auditRetention.MAX_DAYS });
+});
+
+router.put('/audit-retention', (req, res) => {
+  try {
+    const days = auditRetention.setDays((req.body || {}).days);
+    const { deleted } = auditRetention.purge();
+    logger.info('audit_retention_updated', { requestId: req.id, admin: req.admin.username, days, deleted });
+    res.json({ days, deleted, max: auditRetention.MAX_DAYS });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message, requestId: req.id });
+  }
 });
 
 function csvEscape(val) {
@@ -777,6 +832,7 @@ router.get('/templates', (req, res) => {
 });
 
 const SAMPLE_VARS = {
+  login_success: { username: 'jdoe@contoso.com', domain: 'Contoso', ip: '203.0.113.7', time: new Date().toISOString() },
   login_failure: { username: 'jdoe@contoso.com', domain: 'Contoso', reason: 'Invalid credentials', ip: '203.0.113.7', time: new Date().toISOString() },
   account_action: { action: 'Account unlock', result: 'Success', target: 'jdoe', actor: 'helpdesk1@contoso.com', domain: 'Contoso', detail: '', ip: '203.0.113.7', time: new Date().toISOString() },
 };

@@ -5,14 +5,19 @@ const { URL } = require('url');
 const logger = require('./logger');
 const cryptoHelper = require('./crypto');
 
-// Creates a client configured for a domain's full list of LDAP servers.
-// ldapjs accepts an array of URLs directly and handles failover between them.
-function createClient(domainConfig) {
+// Creates a client bound to a single LDAP server URL. Kept internal -
+// callers should go through connectClient() below, which is what actually
+// walks the domain's configured server list on failure.
+function createClientForUrl(url, domainConfig) {
   const client = ldap.createClient({
-    url: domainConfig.ldap_urls,
+    url,
     tlsOptions: { rejectUnauthorized: !!domainConfig.tls_reject_unauthorized },
     timeout: 8000,
     connectTimeout: 8000,
+    // We do our own failover across domainConfig.ldap_urls in connectClient().
+    // Letting ldapjs's internal reconnect loop run as well would just retry
+    // this same dead server instead of moving on to the next one.
+    reconnect: false,
   });
 
   // IMPORTANT: ldapjs clients are EventEmitters. If the underlying socket
@@ -24,13 +29,132 @@ function createClient(domainConfig) {
   // that: we log the failure and let the in-flight bind/search/modify
   // promise reject normally instead.
   client.on('error', (err) => {
-    logger.warn('ldap_client_error', { urls: (domainConfig.ldap_urls || []).join(','), ...logger.errInfo(err) });
-  });
-  client.on('connectError', (err) => {
-    logger.warn('ldap_connect_error', { urls: (domainConfig.ldap_urls || []).join(','), ...logger.errInfo(err) });
+    logger.warn('ldap_client_error', { url, ...logger.errInfo(err) });
   });
 
   return client;
+}
+
+// Error codes/names that indicate the *server itself* couldn't be reached
+// (host down, refused, timed out, DNS failure, etc.) as opposed to an error
+// that came back from a server that IS up and answering (bad credentials,
+// protocol violation, ...). Only the former should cause us to move on to
+// the next configured LDAP server - the latter is a definitive answer from
+// a live server and retrying it against another replica wouldn't change it.
+const CONNECTIVITY_ERROR_CODES = new Set([
+  'EHOSTUNREACH', 'ECONNREFUSED', 'ENETUNREACH', 'ETIMEDOUT',
+  'ECONNRESET', 'EAI_AGAIN', 'ENOTFOUND', 'EPIPE',
+]);
+
+function isConnectivityError(err) {
+  if (!err) return false;
+  if (CONNECTIVITY_ERROR_CODES.has(err.code)) return true;
+  // ldapjs wraps connect-phase failures (including its own connect timeout)
+  // in these error types regardless of the underlying socket error code.
+  if (err.name === 'ConnectionError' || err.name === 'TimeoutError') return true;
+  return false;
+}
+
+// Opens a live, connected client against a domain's configured LDAP
+// servers, trying each URL in domainConfig.ldap_urls **in order** and
+// falling over to the next one whenever a server is unreachable. There can
+// be two or more servers configured for a domain, and any of them may be
+// down at a given time, so every URL in the list gets a chance before we
+// give up.
+//
+// Note: ldapjs's own built-in support for passing an array of URLs to
+// createClient() does NOT reliably do this - it can surface the first
+// server's connection error to the caller (e.g. to an in-flight bind())
+// before it has gotten around to trying the next URL in the array, so a
+// single unreachable server can fail a login even when a working server is
+// configured right after it. Failover across the pool is therefore handled
+// explicitly here instead of being delegated to ldapjs.
+// Remembers, per domain, which URL last connected successfully. Every
+// directory operation (login, unlock, reset password, search, ...) opens
+// its own short-lived connection via connectClient(), so without this a
+// domain with a down first server pays the full connectTimeout on that
+// dead server again on *every single action* - which, across a login
+// followed by a lookup-then-unlock or lookup-then-reset (two LDAP
+// connections each), is enough added latency that those actions can
+// appear to hang or fail even though they would eventually succeed. Once
+// any connection succeeds against a given URL, that URL is tried first on
+// subsequent calls for the same domain, so only the very first request
+// after a server goes down pays the timeout; everything after that goes
+// straight to the known-good server. If the remembered URL stops working,
+// it's dropped from the cache and the full list (in configured order) is
+// tried again.
+const lastGoodUrlByDomain = new Map();
+
+function domainCacheKey(domainConfig) {
+  return domainConfig && domainConfig.id != null
+    ? `id:${domainConfig.id}`
+    : `urls:${(domainConfig.ldap_urls || []).join(',')}`;
+}
+
+function connectClient(domainConfig) {
+  const configuredUrls = domainConfig.ldap_urls || [];
+  if (!configuredUrls.length) {
+    return Promise.reject(new Error('No LDAP servers configured for this domain'));
+  }
+
+  const cacheKey = domainCacheKey(domainConfig);
+  const lastGood = lastGoodUrlByDomain.get(cacheKey);
+  const urls = lastGood && configuredUrls.includes(lastGood)
+    ? [lastGood, ...configuredUrls.filter((u) => u !== lastGood)]
+    : configuredUrls;
+
+  return new Promise((resolve, reject) => {
+    let index = 0;
+    let lastErr = null;
+
+    const attemptNext = () => {
+      if (index >= urls.length) {
+        reject(lastErr || new Error('All configured LDAP servers are unreachable'));
+        return;
+      }
+      const url = urls[index++];
+      const client = createClientForUrl(url, domainConfig);
+      let settled = false;
+
+      const cleanup = () => {
+        client.removeListener('connect', onConnect);
+        client.removeListener('connectError', onConnectError);
+      };
+
+      const onConnect = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        lastGoodUrlByDomain.set(cacheKey, url);
+        resolve(client);
+      };
+
+      const onConnectError = (err) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        logger.warn('ldap_connect_error', { url, ...logger.errInfo(err) });
+        lastErr = err;
+        if (lastGoodUrlByDomain.get(cacheKey) === url) {
+          lastGoodUrlByDomain.delete(cacheKey);
+        }
+        try { client.destroy(); } catch (e) { /* already gone */ }
+        if (isConnectivityError(err)) {
+          attemptNext();
+        } else {
+          // The server answered but something else went wrong (e.g. TLS
+          // config mismatch) - that's not something the next server in the
+          // list will fix differently, so surface it immediately.
+          reject(err);
+        }
+      };
+
+      client.on('connect', onConnect);
+      client.on('connectError', onConnectError);
+    };
+
+    attemptNext();
+  });
 }
 
 function bindClient(client, dn, password) {
@@ -55,7 +179,7 @@ function unbindClient(client) {
 // acting user's own credentials, so their AD account must have the
 // necessary delegated rights.
 async function withUserBind(domainConfig, bindIdentity, password, fn) {
-  const client = createClient(domainConfig);
+  const client = await connectClient(domainConfig);
   try {
     logger.debug('ldap_bind_attempt', { bindIdentity, urls: domainConfig.ldap_urls.join(',') });
     await bindClient(client, bindIdentity, password);
@@ -147,7 +271,7 @@ async function resolveGroupDns(client, baseDn, groupNames) {
 // resolution strategies; genuine bind/connection errors do still throw.
 async function lookupByMail(domainConfig, mailValue) {
   if (!domainConfig.lookup_bind_dn || !domainConfig.lookup_bind_password_enc) return null;
-  const client = createClient(domainConfig);
+  const client = await connectClient(domainConfig);
   try {
     const lookupPassword = cryptoHelper.decrypt(domainConfig.lookup_bind_password_enc);
     await bindClient(client, domainConfig.lookup_bind_dn, lookupPassword);
@@ -202,9 +326,13 @@ async function bindWithFallback(domainConfig, typedIdentifier, password) {
     attempts.push(`${domainConfig.netbios_name}\\${localPart}`);
   }
 
+  // Connect once (with failover across domainConfig.ldap_urls) and reuse
+  // that single live connection for every identity attempt below, rather
+  // than reconnecting from scratch per attempt - which previously meant
+  // re-discovering the same dead first server once per attempt.
+  const client = await connectClient(domainConfig);
   let lastErr = null;
   for (const attempt of attempts) {
-    const client = createClient(domainConfig);
     try {
       logger.debug('ldap_bind_attempt', { bindIdentity: attempt });
       await bindClient(client, attempt, password);
@@ -212,9 +340,9 @@ async function bindWithFallback(domainConfig, typedIdentifier, password) {
       return { client, localPart };
     } catch (err) {
       lastErr = err;
-      await unbindClient(client);
     }
   }
+  await unbindClient(client);
   throw lastErr || new Error('Authentication failed');
 }
 
