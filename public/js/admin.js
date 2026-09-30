@@ -13,6 +13,8 @@ const sessionGuard = createSessionGuard({
   },
 });
 
+IAMTheme.configure({ endpoint: '/api/admin/preferences' });
+
 async function api(path, opts = {}) {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
@@ -52,6 +54,7 @@ async function checkSession() {
 }
 
 function showLogin() {
+  IAMTheme.onSignOut();
   try {
     if (sessionStorage.getItem(EXPIRED_FLAG)) {
       sessionStorage.removeItem(EXPIRED_FLAG);
@@ -65,6 +68,7 @@ function showLogin() {
 }
 
 function showApp(me) {
+  IAMTheme.onSignIn(me);
   sessionGuard.start(me.sessionTimeoutSeconds);
   $('#adminLoginView').classList.add('hidden');
   $('#adminAppView').classList.remove('hidden');
@@ -359,14 +363,19 @@ $('#testDomainDuoBtn').addEventListener('click', async () => {
   resultEl.classList.remove('hidden');
   resultEl.textContent = 'Testing...';
   const useOverride = $('#dDuoOverride').checked;
-  const body = useOverride
-    ? {
-        clientId: $('#dDuoClientId').value.trim(),
-        apiHostname: $('#dDuoApiHostname').value.trim(),
-        redirectUrl: $('#dDuoRedirectUrl').value.trim(),
-        clientSecret: $('#dDuoClientSecret').value,
-      }
-    : {}; // no override entered - falls back to testing the saved global Duo app
+  // The server looks up this domain's own saved secret when the secret box
+  // is blank (it is always blank after a save), so send which domain this is.
+  const body = {
+    scope: 'domain',
+    domainId: $('#domainId').value || null,
+    credentialsOverride: useOverride,
+    ...(useOverride ? {
+      clientId: $('#dDuoClientId').value.trim(),
+      apiHostname: $('#dDuoApiHostname').value.trim(),
+      redirectUrl: $('#dDuoRedirectUrl').value.trim(),
+      clientSecret: $('#dDuoClientSecret').value,
+    } : {}),
+  };
   try {
     const result = await api('/api/admin/duo/test', { method: 'POST', body: JSON.stringify(body) });
     resultEl.textContent = '✅ ' + result.message;
@@ -528,6 +537,7 @@ $('#testGlobalDuoBtn').addEventListener('click', async () => {
     const result = await api('/api/admin/duo/test', {
       method: 'POST',
       body: JSON.stringify({
+        scope: 'global',
         clientId: $('#gDuoClientId').value.trim(),
         apiHostname: $('#gDuoApiHostname').value.trim(),
         redirectUrl: $('#gDuoRedirectUrl').value.trim(),
@@ -756,7 +766,7 @@ function renderTemplateEditor() {
       <button type="button" id="tplSaveBtn" class="btn-primary">Save</button>
       <button type="button" id="tplResetBtn" class="btn-link danger">Reset to default</button>
     </div>
-    <div id="tplPreview" class="hidden" style="margin-top:12px; padding:12px; border:1px solid var(--border); border-radius:8px; background:#f9fafb; white-space:pre-wrap; font-size:13px;"></div>
+    <div id="tplPreview" class="hidden" style="margin-top:12px; padding:12px; border:1px solid var(--border); border-radius:8px; background:var(--hover-bg); white-space:pre-wrap; font-size:13px;"></div>
     <div id="tplError" class="error hidden"></div>
   `;
 

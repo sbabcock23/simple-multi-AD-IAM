@@ -71,6 +71,18 @@ CREATE TABLE IF NOT EXISTS audit_log (
 CREATE INDEX IF NOT EXISTS idx_audit_domain ON audit_log(domain_id);
 CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor_username);
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);
+
+-- Per-person display preferences (currently just the light/dark theme).
+-- Keyed by portal + username because the two portals have separate
+-- identities: portal 'user' = directory users (lower-cased username@domain),
+-- portal 'admin' = local admin accounts.
+CREATE TABLE IF NOT EXISTS user_preferences (
+  portal TEXT NOT NULL,
+  username TEXT NOT NULL,
+  theme TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (portal, username)
+);
 `);
 } catch (err) {
   logger.error('schema_init_failed', logger.errInfo(err));

@@ -4,6 +4,7 @@ const db = require('../db');
 const logger = require('../logger');
 const { verifyPassword, signAdminToken, verifyToken, sessionCookieOptions, refreshSession } = require('../auth');
 const sessionConfig = require('../sessionConfig');
+const preferences = require('../preferences');
 
 router.post('/login', (req, res) => {
   const { username, password } = req.body || {};
@@ -19,7 +20,7 @@ router.post('/login', (req, res) => {
   const token = signAdminToken({ id: row.id, username: row.username }, ttl);
   res.cookie('admin_token', token, sessionCookieOptions(ttl));
   logger.info('admin_login_success', { requestId: req.id, username: row.username, ip: req.ip });
-  res.json({ ok: true, username: row.username, sessionTimeoutSeconds: ttl });
+  res.json({ ok: true, username: row.username, sessionTimeoutSeconds: ttl, theme: preferences.getTheme('admin', row.username) });
 });
 
 router.post('/logout', (req, res) => {
@@ -33,7 +34,7 @@ router.get('/me', (req, res) => {
     return res.status(401).json({ error: 'Not authenticated' });
   }
   const ttl = refreshSession(res, data);
-  res.json({ username: data.username, sessionTimeoutSeconds: ttl });
+  res.json({ username: data.username, sessionTimeoutSeconds: ttl, theme: preferences.getTheme('admin', data.username) });
 });
 
 module.exports = router;
