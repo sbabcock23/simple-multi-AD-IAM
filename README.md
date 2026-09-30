@@ -93,6 +93,45 @@ how that works, and its one real limitation:
   no stored service account" above). In that specific edge case, ask that
   person to sign in with their UPN instead.
 
+## Multi-factor authentication (Cisco Duo)
+
+See **[DUO_SETUP.md](DUO_SETUP.md)** for a full step-by-step setup guide.
+Short version below.
+
+Admin → Multi-factor authentication (Cisco Duo) configures a Duo Universal
+Prompt (OAuth2) challenge that runs after a successful username/password
+sign-in on the **user portal**. Two modes only: **Enforced** (required for
+every login) or **Disabled**. Each domain can override the global mode
+(inherit / enforced / disabled) and optionally use a completely different
+Duo application than the global one.
+
+Setup:
+1. In Duo's admin panel, create a **Generic OIDC** / **Universal Prompt**
+   application and note its Client ID, Client Secret, and API hostname.
+2. Set the **Redirect URL** to this app's **user portal** address (not the
+   admin portal) at `/api/auth/duo-callback` - e.g.
+   `https://portal.contoso.com/api/auth/duo-callback` (or
+   `http://<host>:<PORT>/api/auth/duo-callback` if unproxied) - and
+   register that exact URL in Duo's application settings.
+3. Enter those four values in the admin portal and use **Test Duo
+   connection** to confirm they're valid before enforcing.
+4. Set Mode to **Enforced** globally, or leave it Disabled globally and
+   enforce it per-domain instead.
+
+Fails closed: if a domain resolves to "enforced" but the Duo application
+credentials aren't fully set (globally or via that domain's override),
+login is **denied outright** with a clear error, never silently downgraded
+to password-only. This is enforced twice - once when saving settings (the
+admin API refuses to save "enforced" without complete credentials) and
+again at login time (in case the stored config is ever inconsistent) - and
+both paths are logged server-side (`duo_misconfigured`).
+
+Credentials are stored encrypted at rest the same way SMTP/lookup-account
+passwords are (see "Security notes"). The pending-MFA state between the
+redirect to Duo and back is a short-lived (5 minute), signed, httpOnly
+cookie separate from the real session cookie - a session is never issued
+until Duo confirms the second factor.
+
 ## Audit logging
 
 - A **global switch** (Admin → Audit settings) turns all logging on or off.
@@ -328,12 +367,17 @@ src/db.js                  SQLite schema, defaults, and migrations
 src/domains.js             Reads domain config rows (parses ldap_urls JSON)
 src/audit.js                Writes audit log entries, respecting global/per-domain toggles
 src/crypto.js               AES-256-GCM encryption helpers
-src/auth.js                Password hashing + JWT session helpers
+src/auth.js                Password hashing + JWT session helpers (user, admin, and short-lived MFA-pending tokens)
+src/sessionConfig.js       Admin-configurable inactivity timeouts for the user and admin portals
+src/auditRetention.js      Scheduled purge of audit records older than the configured retention
 src/middleware.js          Route guards; decrypts the cached AD password for user sessions
 src/ldap.js                All LDAP/AD operations, bound as the signed-in user, with multi-server failover
 src/routes/adminAuth.js    Admin login/logout
-src/routes/adminApi.js     Domain, settings, audit log, and admin-user management API
-src/routes/userAuth.js     End-user login (matches email domain -> AD domain) + audit logging
+src/mailer.js              SMTP alert sending (global/per-domain SMTP + recipients)
+src/templates.js           Email template resolution (GUI override -> filesystem file -> built-in default)
+src/duo.js                 Cisco Duo Universal Prompt integration (global/per-domain config resolution)
+src/routes/adminApi.js     Domain, settings, audit log, reports, templates, and admin-user management API
+src/routes/userAuth.js     End-user login + Duo MFA challenge/callback + audit logging
 src/routes/userApi.js      End-user search/unlock/reset API + "my activity" audit feed
-public/                    Static frontend (user portal + admin portal)
+public/                    Static frontend (user portal + admin portal; js/session.js is the shared idle-timeout guard)
 ```

@@ -114,6 +114,7 @@ if (adminCount === 0) {
 // ---------------------------------------------------------------------
 const userApp = createBaseApp('user');
 userApp.use('/api/auth/login', createAuthLimiter());
+userApp.use('/api/auth/duo-callback', createAuthLimiter());
 userApp.use('/api/auth', require('./src/routes/userAuth'));
 userApp.use('/api/users', requireUserAuth, require('./src/routes/userApi'));
 userApp.get('/css/style.css', (req, res) => sendStaticFile(res, path.join(PUBLIC_DIR, 'css', 'style.css')));

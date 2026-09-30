@@ -169,6 +169,16 @@ function openDomainModal(d) {
   $('#dLookupTestEmail').value = '';
   $('#lookupTestResult').classList.add('hidden');
 
+  const duoCfg = d ? d.duo_config : { mode: 'inherit', credentialsOverride: false, clientId: '', apiHostname: '', redirectUrl: '' };
+  $('#dDuoMode').value = duoCfg.mode || 'inherit';
+  $('#dDuoOverride').checked = !!duoCfg.credentialsOverride;
+  $('#dDuoClientId').value = duoCfg.clientId || '';
+  $('#dDuoApiHostname').value = duoCfg.apiHostname || '';
+  $('#dDuoRedirectUrl').value = duoCfg.redirectUrl || '';
+  $('#dDuoClientSecret').value = '';
+  $('#dDuoClientSecret').placeholder = duoCfg.hasClientSecret ? 'Leave blank to keep existing' : 'Not set';
+  $('#domainDuoTestResult').classList.add('hidden');
+
   const alertCfg = d ? d.alert_config : { enabled: true, onLoginSuccess: true, onLoginFailure: true, onAccountAction: true, recipients: [], smtpOverride: false, smtp: {} };
   $('#dAlertsEnabled').checked = !!alertCfg.enabled;
   $('#dAlertLoginSuccess').checked = alertCfg.onLoginSuccess !== false;
@@ -224,6 +234,17 @@ function collectValues(containerSel, cssClass) {
   return Array.from(document.querySelectorAll(`${containerSel} .${cssClass}`)).map((i) => i.value.trim()).filter(Boolean);
 }
 
+function domainDuoConfigPayload() {
+  return {
+    mode: $('#dDuoMode').value,
+    credentialsOverride: $('#dDuoOverride').checked,
+    clientId: $('#dDuoClientId').value.trim(),
+    apiHostname: $('#dDuoApiHostname').value.trim(),
+    redirectUrl: $('#dDuoRedirectUrl').value.trim(),
+    clientSecret: $('#dDuoClientSecret').value,
+  };
+}
+
 function domainAlertConfigPayload() {
   return {
     enabled: $('#dAlertsEnabled').checked,
@@ -261,6 +282,7 @@ function domainPayload() {
     feature_force_change: $('#dFeatForce').checked,
     allowed_groups: collectValues('#dGroupsList', 'group-name'),
     alert_config: domainAlertConfigPayload(),
+    duo_config: domainDuoConfigPayload(),
   };
 }
 
@@ -332,6 +354,27 @@ $('#testLookupBtn').addEventListener('click', async () => {
   }
 });
 
+$('#testDomainDuoBtn').addEventListener('click', async () => {
+  const resultEl = $('#domainDuoTestResult');
+  resultEl.classList.remove('hidden');
+  resultEl.textContent = 'Testing...';
+  const useOverride = $('#dDuoOverride').checked;
+  const body = useOverride
+    ? {
+        clientId: $('#dDuoClientId').value.trim(),
+        apiHostname: $('#dDuoApiHostname').value.trim(),
+        redirectUrl: $('#dDuoRedirectUrl').value.trim(),
+        clientSecret: $('#dDuoClientSecret').value,
+      }
+    : {}; // no override entered - falls back to testing the saved global Duo app
+  try {
+    const result = await api('/api/admin/duo/test', { method: 'POST', body: JSON.stringify(body) });
+    resultEl.textContent = '✅ ' + result.message;
+  } catch (e) {
+    resultEl.textContent = '❌ ' + e.message;
+  }
+});
+
 $('#saveDomain').addEventListener('click', async () => {
   const id = $('#domainId').value;
   const payload = domainPayload();
@@ -367,17 +410,25 @@ async function deleteDomain(id) {
 let savedRetentionDays = 0;
 
 async function loadSettings() {
-  const [s, alerts, sessions, retention] = await Promise.all([
+  const [s, alerts, sessions, retention, duoCfg] = await Promise.all([
     api('/api/admin/settings'),
     api('/api/admin/alerts'),
     api('/api/admin/session-config'),
     api('/api/admin/audit-retention'),
+    api('/api/admin/duo'),
   ]);
   savedRetentionDays = retention.days;
   $('#gAuditRetention').value = retention.days;
   $('#gUserTimeout').value = sessions.userTimeoutMinutes;
   $('#gAdminTimeout').value = sessions.adminTimeoutMinutes;
   $('#globalAuditEnabled').checked = !!s.auditLoggingEnabled;
+
+  $('#gDuoMode').value = duoCfg.mode || 'disabled';
+  $('#gDuoClientId').value = duoCfg.clientId || '';
+  $('#gDuoApiHostname').value = duoCfg.apiHostname || '';
+  $('#gDuoRedirectUrl').value = duoCfg.redirectUrl || '';
+  $('#gDuoClientSecret').value = '';
+  $('#gDuoClientSecret').placeholder = duoCfg.hasClientSecret ? 'Leave blank to keep existing' : 'Not set';
 
   $('#globalAlertsEnabled').checked = !!alerts.enabled;
   $('#gAlertLoginSuccess').checked = !!alerts.onLoginSuccess;
@@ -447,6 +498,47 @@ async function saveGlobalSettings() {
   setTimeout(() => $('#settingsSaved').classList.add('hidden'), 2000);
   loadSettings();
 }
+
+$('#saveDuoBtn').addEventListener('click', async () => {
+  try {
+    const cfg = await api('/api/admin/duo', {
+      method: 'PUT',
+      body: JSON.stringify({
+        mode: $('#gDuoMode').value,
+        clientId: $('#gDuoClientId').value.trim(),
+        apiHostname: $('#gDuoApiHostname').value.trim(),
+        redirectUrl: $('#gDuoRedirectUrl').value.trim(),
+        clientSecret: $('#gDuoClientSecret').value,
+      }),
+    });
+    $('#duoSettingsSaved').classList.remove('hidden');
+    setTimeout(() => $('#duoSettingsSaved').classList.add('hidden'), 2000);
+    $('#gDuoClientSecret').value = '';
+    $('#gDuoClientSecret').placeholder = cfg.hasClientSecret ? 'Leave blank to keep existing' : 'Not set';
+  } catch (e) {
+    alert('Could not save Duo settings: ' + e.message);
+  }
+});
+
+$('#testGlobalDuoBtn').addEventListener('click', async () => {
+  const resultEl = $('#globalDuoTestResult');
+  resultEl.classList.remove('hidden');
+  resultEl.textContent = 'Testing...';
+  try {
+    const result = await api('/api/admin/duo/test', {
+      method: 'POST',
+      body: JSON.stringify({
+        clientId: $('#gDuoClientId').value.trim(),
+        apiHostname: $('#gDuoApiHostname').value.trim(),
+        redirectUrl: $('#gDuoRedirectUrl').value.trim(),
+        clientSecret: $('#gDuoClientSecret').value,
+      }),
+    });
+    resultEl.textContent = '✅ ' + result.message;
+  } catch (e) {
+    resultEl.textContent = '❌ ' + e.message;
+  }
+});
 
 $('#testGlobalEmailBtn').addEventListener('click', async () => {
   const resultEl = $('#globalEmailTestResult');
@@ -712,6 +804,7 @@ const REPORT_TABS = [
   { key: 'unsuccessful-actions', label: 'Unsuccessful actions' },
   { key: 'by-user', label: 'By user' },
   { key: 'by-target', label: 'By target account' },
+  { key: 'mfa-activity', label: 'MFA activity' },
   { key: 'activity-trend', label: 'Activity trend' },
 ];
 let activeReportKey = 'failed-logins';
@@ -738,7 +831,7 @@ function updateReportEventTypeFilter() {
   if (activeReportKey === 'successful-events') {
     wrap.classList.remove('hidden');
     select.innerHTML = '<option value="">All</option>' +
-      ['login', 'logout', 'search', 'unlock', 'reset_password'].map((v) => `<option value="${v}">${v}</option>`).join('');
+      ['login', 'logout', 'search', 'unlock', 'reset_password', 'mfa_challenge'].map((v) => `<option value="${v}">${v}</option>`).join('');
   } else if (activeReportKey === 'unsuccessful-actions') {
     wrap.classList.remove('hidden');
     select.innerHTML = '<option value="">Unlock + reset password</option>' +

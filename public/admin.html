@@ -86,6 +86,30 @@
   </div>
 
   <div class="card">
+    <h2>Multi-factor authentication (Cisco Duo)</h2>
+    <p class="muted" style="margin-top:0;">Adds a Duo Universal Prompt challenge after a successful username/password sign-in on the user portal. Requires a Duo application (Client ID, Client Secret, API hostname) and a Redirect URL registered exactly in Duo's admin panel. Any domain can override the mode or use a different Duo application in its own edit form.</p>
+    <label>Mode
+      <select id="gDuoMode">
+        <option value="disabled">Disabled</option>
+        <option value="enforced">Enforced - required for every login</option>
+      </select>
+    </label>
+    <div class="grid2">
+      <label>Client ID <input id="gDuoClientId" placeholder="DIXXXXXXXXXXXXXXXXXX"/></label>
+      <label>Client secret <input type="password" id="gDuoClientSecret" placeholder="Leave blank to keep existing"/></label>
+      <label>API hostname <input id="gDuoApiHostname" placeholder="api-xxxxxxxx.duosecurity.com"/></label>
+      <label>Redirect URL <input id="gDuoRedirectUrl" placeholder="https://portal.contoso.com/api/auth/duo-callback"/></label>
+    </div>
+    <p class="muted" style="margin-top:0;">The redirect URL must point at this app's <strong>user portal</strong> (not the admin portal) at the path <code>/api/auth/duo-callback</code>, using whatever hostname/port users actually reach it on, and must be registered identically in Duo's admin panel.</p>
+    <div class="modal-actions" style="justify-content:flex-start; gap:12px;">
+      <button id="saveDuoBtn" class="btn-primary">Save settings</button>
+      <button id="testGlobalDuoBtn" class="btn-secondary" type="button">Test Duo connection</button>
+      <span id="duoSettingsSaved" class="success hidden">Saved.</span>
+    </div>
+    <div id="globalDuoTestResult" class="hidden" style="margin-top:8px; font-size:13px;"></div>
+  </div>
+
+  <div class="card">
     <div class="row-between">
       <h2>Email templates</h2>
       <span id="templateSourceBadge" class="badge badge-ok hidden"></span>
@@ -139,6 +163,7 @@
           <option value="search">Search</option>
           <option value="unlock">Unlock</option>
           <option value="reset_password">Reset password</option>
+          <option value="mfa_challenge">MFA challenge issued</option>
         </select>
       </label>
       <label>Result
@@ -209,6 +234,25 @@
     <label class="checkbox"><input type="checkbox" id="dFeatUnlock" checked/> Allow account unlock</label>
     <label class="checkbox"><input type="checkbox" id="dFeatReset" checked/> Allow password reset</label>
     <label class="checkbox"><input type="checkbox" id="dFeatForce" checked/> Allow "force change at next logon"</label>
+
+    <h4>Multi-factor authentication override (optional)</h4>
+    <p class="muted" style="margin-top:0;">Overrides the global Duo mode for this domain specifically.</p>
+    <label>Mode
+      <select id="dDuoMode">
+        <option value="inherit">Inherit global setting</option>
+        <option value="enforced">Enforced</option>
+        <option value="disabled">Disabled</option>
+      </select>
+    </label>
+    <label class="checkbox"><input type="checkbox" id="dDuoOverride"/> Use a different Duo application for this domain</label>
+    <div class="grid2">
+      <label>Client ID <input id="dDuoClientId" placeholder="DIXXXXXXXXXXXXXXXXXX"/></label>
+      <label>Client secret <input type="password" id="dDuoClientSecret" placeholder="Leave blank to keep existing"/></label>
+      <label>API hostname <input id="dDuoApiHostname" placeholder="api-xxxxxxxx.duosecurity.com"/></label>
+      <label>Redirect URL <input id="dDuoRedirectUrl" placeholder="https://portal.contoso.com/api/auth/duo-callback"/></label>
+    </div>
+    <button type="button" id="testDomainDuoBtn" class="btn-secondary" style="margin-bottom:12px;">Test Duo connection</button>
+    <div id="domainDuoTestResult" class="hidden" style="margin-top:4px; margin-bottom:12px; font-size:13px;"></div>
 
     <h4>Email alerts override (optional)</h4>
     <p class="muted" style="margin-top:0;">Alerts still require email alerts to be enabled globally - these settings narrow or redirect alerts for this domain specifically.</p>
