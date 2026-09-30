@@ -79,15 +79,11 @@ router.post('/login', async (req, res) => {
     ...mailer.loginSuccessEmail({ username, domainName: domain.name, ip: req.ip, time: new Date().toISOString() }),
   });
 
-  // The user's own credentials are cached (encrypted) inside their signed,
-  // httpOnly session cookie so later requests can perform directory
-  // operations as them - there is no separate stored service account.
-  // `bindDn` is the account's real distinguishedName, resolved during
-  // authentication; every subsequent LDAP bind in this session uses it
-  // directly, regardless of what identifier the person originally typed.
+  // Do not store sensitive credential material in client-side cookies.
+  // Keep the user token limited to non-sensitive identity/session claims.
   const ttl = sessionConfig.userTimeoutSeconds();
   const token = signUserToken({
-    username, domainId: domain.id, pwd: cryptoHelper.encrypt(password), bindDn: authorizedUser.dn,
+    username, domainId: domain.id,
   }, ttl);
   res.cookie('user_token', token, sessionCookieOptions(ttl));
   res.json({ ok: true, username, domain: domain.name, features: featuresFor(domain), sessionTimeoutSeconds: ttl });
