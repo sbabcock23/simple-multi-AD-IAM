@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const logger = require('../logger');
-const { verifyPassword, buildEncryptedAdminToken, verifyToken, sessionCookieOptions, refreshSession } = require('../auth');
+const { verifyPassword, signAdminToken, verifyToken, sessionCookieOptions, refreshSession } = require('../auth');
 const sessionConfig = require('../sessionConfig');
 
 router.post('/login', (req, res) => {
@@ -16,7 +16,7 @@ router.post('/login', (req, res) => {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
   const ttl = sessionConfig.adminTimeoutSeconds();
-  const token = buildEncryptedAdminToken({ id: row.id, username: row.username }, ttl);
+  const token = signAdminToken({ id: row.id, username: row.username }, ttl);
   res.cookie('admin_token', token, sessionCookieOptions(ttl));
   logger.info('admin_login_success', { requestId: req.id, username: row.username, ip: req.ip });
   res.json({ ok: true, username: row.username, sessionTimeoutSeconds: ttl });
