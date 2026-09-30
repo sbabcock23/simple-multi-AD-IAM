@@ -17,11 +17,18 @@ function getDomainForReq(req) {
 
 // The signed-in user's own history of logins and actions - current session
 // and past ones - so they can see exactly what was done under their account.
+const PAGE_SIZES = [25, 50, 100];
+
 router.get('/audit', (req, res) => {
+  const requestedSize = parseInt(req.query.pageSize, 10);
+  const pageSize = PAGE_SIZES.includes(requestedSize) ? requestedSize : PAGE_SIZES[0];
+  const total = db.prepare('SELECT COUNT(*) AS n FROM audit_log WHERE actor_username = ?').get(req.user.username).n;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const page = Math.min(Math.max(1, parseInt(req.query.page, 10) || 1), totalPages);
   const rows = db.prepare(
-    'SELECT * FROM audit_log WHERE actor_username = ? ORDER BY created_at DESC LIMIT 200'
-  ).all(req.user.username);
-  res.json(rows);
+    'SELECT * FROM audit_log WHERE actor_username = ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?'
+  ).all(req.user.username, pageSize, (page - 1) * pageSize);
+  res.json({ rows, total, page, pageSize, totalPages });
 });
 
 router.get('/search', async (req, res) => {
@@ -58,6 +65,10 @@ router.get('/:id', async (req, res) => {
     res.status(e.status || 500).json({ error: e.message, requestId: req.id });
   }
 });
+
+// Lightweight no-op used by the browser to keep an active session alive; the
+// auth middleware has already refreshed the session cookie by the time this runs.
+router.post('/keepalive', (req, res) => res.json({ ok: true }));
 
 router.post('/:id/unlock', async (req, res) => {
   let domain;

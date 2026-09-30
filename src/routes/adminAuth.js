@@ -2,7 +2,8 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const logger = require('../logger');
-const { verifyPassword, signAdminToken, verifyToken } = require('../auth');
+const { verifyPassword, signAdminToken, verifyToken, sessionCookieOptions, refreshSession } = require('../auth');
+const sessionConfig = require('../sessionConfig');
 
 router.post('/login', (req, res) => {
   const { username, password } = req.body || {};
@@ -14,15 +15,11 @@ router.post('/login', (req, res) => {
     logger.warn('admin_login_failed', { requestId: req.id, username, ip: req.ip });
     return res.status(401).json({ error: 'Invalid credentials' });
   }
-  const token = signAdminToken({ id: row.id, username: row.username });
-  res.cookie('admin_token', token, {
-    httpOnly: true,
-    sameSite: 'strict',
-    secure: process.env.COOKIE_SECURE === 'true',
-    maxAge: 8 * 60 * 60 * 1000,
-  });
+  const ttl = sessionConfig.adminTimeoutSeconds();
+  const token = signAdminToken({ id: row.id, username: row.username }, ttl);
+  res.cookie('admin_token', token, sessionCookieOptions(ttl));
   logger.info('admin_login_success', { requestId: req.id, username: row.username, ip: req.ip });
-  res.json({ ok: true, username: row.username });
+  res.json({ ok: true, username: row.username, sessionTimeoutSeconds: ttl });
 });
 
 router.post('/logout', (req, res) => {
@@ -35,7 +32,8 @@ router.get('/me', (req, res) => {
   if (!data || data.role !== 'admin') {
     return res.status(401).json({ error: 'Not authenticated' });
   }
-  res.json({ username: data.username });
+  const ttl = refreshSession(res, data);
+  res.json({ username: data.username, sessionTimeoutSeconds: ttl });
 });
 
 module.exports = router;

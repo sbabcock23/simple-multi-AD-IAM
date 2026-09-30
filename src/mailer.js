@@ -4,8 +4,9 @@ const cryptoHelper = require('./crypto');
 const templates = require('./templates');
 
 const SMTP_DEFAULTS = { host: '', port: 587, secure: false, tlsRejectUnauthorized: true, username: '', passwordEnc: '', from: '' };
-const GLOBAL_DEFAULTS = { enabled: false, onLoginFailure: true, onAccountAction: true, recipients: [], smtp: { ...SMTP_DEFAULTS } };
-const DOMAIN_DEFAULTS = { enabled: true, onLoginFailure: true, onAccountAction: true, recipients: [], smtpOverride: false, smtp: { ...SMTP_DEFAULTS } };
+// onLoginSuccess defaults to OFF globally: it fires on every sign-in, so it is opt-in.
+const GLOBAL_DEFAULTS = { enabled: false, onLoginSuccess: false, onLoginFailure: true, onAccountAction: true, recipients: [], smtp: { ...SMTP_DEFAULTS } };
+const DOMAIN_DEFAULTS = { enabled: true, onLoginSuccess: true, onLoginFailure: true, onAccountAction: true, recipients: [], smtpOverride: false, smtp: { ...SMTP_DEFAULTS } };
 
 function mergeConfig(partial, defaults) {
   const p = partial && typeof partial === 'object' ? partial : {};
@@ -46,11 +47,12 @@ function getDomainConfig(domainRow) {
 function resolveEffective(domainRow) {
   const g = getGlobalConfig();
   if (!domainRow) {
-    return { enabled: g.enabled, onLoginFailure: g.onLoginFailure, onAccountAction: g.onAccountAction, recipients: g.recipients, smtp: g.smtp };
+    return { enabled: g.enabled, onLoginSuccess: g.onLoginSuccess, onLoginFailure: g.onLoginFailure, onAccountAction: g.onAccountAction, recipients: g.recipients, smtp: g.smtp };
   }
   const d = getDomainConfig(domainRow);
   return {
     enabled: g.enabled && d.enabled,
+    onLoginSuccess: g.onLoginSuccess && d.onLoginSuccess,
     onLoginFailure: g.onLoginFailure && d.onLoginFailure,
     onAccountAction: g.onAccountAction && d.onAccountAction,
     recipients: d.recipients && d.recipients.length ? d.recipients : g.recipients,
@@ -81,6 +83,7 @@ function sendAlert({ domainRow, category, subject, text }) {
   (async () => {
     const cfg = resolveEffective(domainRow);
     if (!cfg.enabled) return;
+    if (category === 'login_success' && !cfg.onLoginSuccess) return;
     if (category === 'login_failure' && !cfg.onLoginFailure) return;
     if (category === 'account_action' && !cfg.onAccountAction) return;
     if (!cfg.recipients.length) { logger.debug('alert_skipped', { category, reason: 'no_recipients' }); return; }
@@ -115,6 +118,12 @@ async function sendTestEmail({ domainRow, overrideSmtp, overrideRecipients }) {
   return { recipients };
 }
 
+function loginSuccessEmail({ username, domainName, ip, time }) {
+  return templates.renderTemplate('login_success', {
+    username, domain: domainName || 'unknown', ip: ip || 'unknown', time,
+  });
+}
+
 function loginFailureEmail({ username, domainName, reason, ip, time }) {
   return templates.renderTemplate('login_failure', {
     username, domain: domainName || 'unrecognized', reason, ip: ip || 'unknown', time,
@@ -140,6 +149,6 @@ function sanitizeSmtp(smtp) {
 
 module.exports = {
   getGlobalConfig, setGlobalConfig, getDomainConfig, resolveEffective,
-  sendAlert, sendTestEmail, loginFailureEmail, accountActionEmail, sanitizeSmtp,
+  sendAlert, sendTestEmail, loginSuccessEmail, loginFailureEmail, accountActionEmail, sanitizeSmtp,
   GLOBAL_DEFAULTS, DOMAIN_DEFAULTS,
 };

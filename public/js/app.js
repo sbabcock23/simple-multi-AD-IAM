@@ -1,5 +1,25 @@
 const $ = (sel) => document.querySelector(sel);
 
+const EXPIRED_FLAG = 'iam_session_expired';
+
+// Signs the browser out when the idle timeout elapses: ends the server session
+// (best effort), remembers why, and reloads so no user data is left on screen.
+const sessionGuard = createSessionGuard({
+  storageKey: 'iam_user_last_activity',
+  keepalive: () => api('/api/users/keepalive', { method: 'POST' }),
+  onExpire: async () => {
+    try {
+      await fetch('/api/auth/logout', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: 'timeout' }),
+      });
+    } catch (e) { /* server session ends on its own anyway */ }
+    try { sessionStorage.setItem(EXPIRED_FLAG, '1'); } catch (e) { /* ignore */ }
+    location.reload();
+  },
+});
+
 let currentFeatures = {};
 let selectedUser = null;
 
@@ -10,6 +30,16 @@ async function api(path, opts = {}) {
     ...opts,
   });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && sessionGuard.isRunning() && path !== '/api/auth/login') {
+    // The server ended the session (timeout) while the page was open.
+    sessionGuard.expire();
+    throw new Error('Your session has expired. Please sign in again.');
+  }
+  if (res.ok) {
+    const ttl = Number(res.headers.get('X-Session-Timeout'));
+    if (ttl) sessionGuard.setTimeoutSeconds(ttl);
+    if (path !== '/api/auth/login') sessionGuard.noteRequest();
+  }
   if (!res.ok) {
     const requestId = data.requestId || res.headers.get('X-Request-Id');
     const message = data.error || 'Request failed';
@@ -28,6 +58,13 @@ async function checkSession() {
 }
 
 function showLogin() {
+  try {
+    if (sessionStorage.getItem(EXPIRED_FLAG)) {
+      sessionStorage.removeItem(EXPIRED_FLAG);
+      $('#loginNotice').textContent = 'You were signed out because your session timed out. Please sign in again.';
+      $('#loginNotice').classList.remove('hidden');
+    }
+  } catch (e) { /* ignore */ }
   $('#loginView').classList.remove('hidden');
   $('#appView').classList.add('hidden');
   $('#userInfo').classList.add('hidden');
@@ -35,11 +72,12 @@ function showLogin() {
 
 function showApp(me) {
   currentFeatures = me.features;
+  sessionGuard.start(me.sessionTimeoutSeconds);
   $('#loginView').classList.add('hidden');
   $('#appView').classList.remove('hidden');
   $('#userInfo').classList.remove('hidden');
   $('#userLabel').textContent = `${me.username} (${me.domain})`;
-  loadActivity();
+  loadActivity(1);
 }
 
 $('#loginForm').addEventListener('submit', async (e) => {
@@ -57,6 +95,7 @@ $('#loginForm').addEventListener('submit', async (e) => {
 });
 
 $('#logoutBtn').addEventListener('click', async () => {
+  sessionGuard.stop();
   await api('/api/auth/logout', { method: 'POST' });
   location.reload();
 });
@@ -128,7 +167,7 @@ $('#unlockBtn').addEventListener('click', async () => {
   } catch (e) {
     showNotice('Unlock failed', e.message, true);
   } finally {
-    loadActivity();
+    loadActivity(1);
   }
 });
 
@@ -158,7 +197,7 @@ $('#confirmReset').addEventListener('click', async () => {
   } catch (e) {
     showResetError(e.message);
   } finally {
-    loadActivity();
+    loadActivity(1);
   }
 });
 
@@ -187,10 +226,42 @@ function showMessage(msg, isError) {
 
 // ---------- My activity ----------
 
-async function loadActivity() {
+const PAGE_SIZES = [25, 50, 100];
+
+// Renders "Showing x-y of n", a rows-per-page selector, and Previous/Next.
+function renderPager(container, state, onChange) {
+  if (!state.total) { container.innerHTML = ''; return; }
+  const start = (state.page - 1) * state.pageSize + 1;
+  const end = Math.min(state.total, state.page * state.pageSize);
+  container.innerHTML = `
+    <span class="muted">Showing ${start}–${end} of ${state.total}</span>
+    <span class="pager-controls">
+      <label class="pager-size">Rows per page
+        <select class="pager-size-select">${PAGE_SIZES.map((n) => `<option value="${n}" ${n === state.pageSize ? 'selected' : ''}>${n}</option>`).join('')}</select>
+      </label>
+      <button type="button" class="btn-secondary pager-prev" ${state.page <= 1 ? 'disabled' : ''}>Previous</button>
+      <span class="muted">Page ${state.page} of ${state.totalPages}</span>
+      <button type="button" class="btn-secondary pager-next" ${state.page >= state.totalPages ? 'disabled' : ''}>Next</button>
+    </span>`;
+  container.querySelector('.pager-size-select').addEventListener('change', (e) => onChange({ page: 1, pageSize: Number(e.target.value) }));
+  container.querySelector('.pager-prev').addEventListener('click', () => onChange({ page: state.page - 1, pageSize: state.pageSize }));
+  container.querySelector('.pager-next').addEventListener('click', () => onChange({ page: state.page + 1, pageSize: state.pageSize }));
+}
+
+const activityState = { page: 1, pageSize: 25 };
+
+// Pass a page number to jump to it; new actions call loadActivity(1) so the
+// newest entry (listed first) is visible.
+async function loadActivity(page = activityState.page) {
   try {
-    const rows = await api('/api/users/audit');
-    renderActivity(rows);
+    const result = await api(`/api/users/audit?page=${page}&pageSize=${activityState.pageSize}`);
+    activityState.page = result.page;
+    activityState.pageSize = result.pageSize;
+    renderActivity(result.rows);
+    renderPager($('#activityPager'), result, (next) => {
+      activityState.pageSize = next.pageSize;
+      loadActivity(next.page);
+    });
   } catch (e) {
     $('#activityTable').innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`;
   }
@@ -225,7 +296,7 @@ function activityRowHtml(r) {
   </tr>`;
 }
 
-$('#refreshActivityBtn').addEventListener('click', loadActivity);
+$('#refreshActivityBtn').addEventListener('click', () => loadActivity());
 
 function escapeHtml(str) {
   const div = document.createElement('div');

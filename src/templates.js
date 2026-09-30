@@ -29,6 +29,17 @@ const DEFAULT_TEMPLATES = {
       'Source IP: {{ip}}\n' +
       'Time: {{time}}\n',
   },
+  login_success: {
+    label: 'Successful login',
+    placeholders: ['username', 'domain', 'ip', 'time'],
+    subject: '[IAM Self-Service] Successful login: {{username}}',
+    body:
+      'A user signed in to the IAM Self-Service portal.\n\n' +
+      'Username: {{username}}\n' +
+      'Domain: {{domain}}\n' +
+      'Source IP: {{ip}}\n' +
+      'Time: {{time}}\n',
+  },
   account_action: {
     label: 'Account action (unlock / reset password)',
     placeholders: ['action', 'result', 'target', 'actor', 'domain', 'detail', 'ip', 'time'],
