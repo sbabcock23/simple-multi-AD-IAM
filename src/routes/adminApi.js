@@ -1,4 +1,5 @@
 const express = require('express');
+const rateLimit = require('express-rate-limit');
 const router = express.Router();
 const db = require('../db');
 const domainsModule = require('../domains');
@@ -442,6 +443,11 @@ function buildAuditQuery(query) {
 
 const PAGE_SIZES = [25, 50, 100];
 
+const auditRouteLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100
+});
+
 // Shared by the admin audit log and the user's own activity list.
 function parsePaging(query) {
   const requested = parseInt(query.pageSize, 10);
@@ -450,7 +456,7 @@ function parsePaging(query) {
   return { pageSize, page };
 }
 
-router.get('/audit', (req, res) => {
+router.get('/audit', auditRouteLimiter, (req, res) => {
   const { sql, params } = buildAuditQuery(req.query);
   const { pageSize, page: requestedPage } = parsePaging(req.query);
   const total = db.prepare(sql.replace('SELECT *', 'SELECT COUNT(*) AS n')).get(...params).n;
