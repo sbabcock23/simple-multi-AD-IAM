@@ -13,6 +13,19 @@ const sessionGuard = createSessionGuard({
   },
 });
 
+const EXPIRED_FLAG = 'iam_admin_session_expired';
+
+// Independent of the user portal: its own timeout, storage key, and flag.
+const sessionGuard = createSessionGuard({
+  storageKey: 'iam_admin_last_activity',
+  keepalive: () => api('/api/admin/keepalive', { method: 'POST' }),
+  onExpire: async () => {
+    try { await fetch('/api/admin/logout', { method: 'POST', credentials: 'include' }); } catch (e) { /* ignore */ }
+    try { sessionStorage.setItem(EXPIRED_FLAG, '1'); } catch (e) { /* ignore */ }
+    location.reload();
+  },
+});
+
 async function api(path, opts = {}) {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
@@ -20,6 +33,16 @@ async function api(path, opts = {}) {
     ...opts,
   });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && sessionGuard.isRunning() && path !== '/api/admin/login') {
+    // The server ended the session (timeout) while the page was open.
+    sessionGuard.expire();
+    throw new Error('Your session has expired. Please sign in again.');
+  }
+  if (res.ok) {
+    const ttl = Number(res.headers.get('X-Session-Timeout'));
+    if (ttl) sessionGuard.setTimeoutSeconds(ttl);
+    if (path !== '/api/admin/login') sessionGuard.noteRequest();
+  }
   if (res.status === 401 && sessionGuard.isRunning() && path !== '/api/admin/login') {
     // The server ended the session (timeout) while the page was open.
     sessionGuard.expire();
@@ -59,12 +82,20 @@ function showLogin() {
       $('#adminLoginNotice').classList.remove('hidden');
     }
   } catch (e) { /* ignore */ }
+  try {
+    if (sessionStorage.getItem(EXPIRED_FLAG)) {
+      sessionStorage.removeItem(EXPIRED_FLAG);
+      $('#adminLoginNotice').textContent = 'You were signed out because your session timed out. Please sign in again.';
+      $('#adminLoginNotice').classList.remove('hidden');
+    }
+  } catch (e) { /* ignore */ }
   $('#adminLoginView').classList.remove('hidden');
   $('#adminAppView').classList.add('hidden');
   $('#adminInfo').classList.add('hidden');
 }
 
 function showApp(me) {
+  sessionGuard.start(me.sessionTimeoutSeconds);
   sessionGuard.start(me.sessionTimeoutSeconds);
   $('#adminLoginView').classList.add('hidden');
   $('#adminAppView').classList.remove('hidden');
@@ -95,6 +126,7 @@ $('#adminLoginForm').addEventListener('submit', async (e) => {
 });
 
 $('#adminLogoutBtn').addEventListener('click', async () => {
+  sessionGuard.stop();
   sessionGuard.stop();
   await api('/api/admin/logout', { method: 'POST' });
   location.reload();
@@ -182,6 +214,7 @@ function openDomainModal(d) {
   const alertCfg = d ? d.alert_config : { enabled: true, onLoginSuccess: true, onLoginFailure: true, onAccountAction: true, recipients: [], smtpOverride: false, smtp: {} };
   $('#dAlertsEnabled').checked = !!alertCfg.enabled;
   $('#dAlertLoginSuccess').checked = alertCfg.onLoginSuccess !== false;
+  $('#dAlertLoginSuccess').checked = alertCfg.onLoginSuccess !== false;
   $('#dAlertLoginFailure').checked = alertCfg.onLoginFailure !== false;
   $('#dAlertAccountAction').checked = alertCfg.onAccountAction !== false;
   $('#dAlertRecipients').value = (alertCfg.recipients || []).join(', ');
@@ -248,6 +281,7 @@ function domainDuoConfigPayload() {
 function domainAlertConfigPayload() {
   return {
     enabled: $('#dAlertsEnabled').checked,
+    onLoginSuccess: $('#dAlertLoginSuccess').checked,
     onLoginSuccess: $('#dAlertLoginSuccess').checked,
     onLoginFailure: $('#dAlertLoginFailure').checked,
     onAccountAction: $('#dAlertAccountAction').checked,
@@ -409,6 +443,8 @@ async function deleteDomain(id) {
 
 let savedRetentionDays = 0;
 
+let savedRetentionDays = 0;
+
 async function loadSettings() {
   const [s, alerts, sessions, retention, duoCfg] = await Promise.all([
     api('/api/admin/settings'),
@@ -417,6 +453,10 @@ async function loadSettings() {
     api('/api/admin/audit-retention'),
     api('/api/admin/duo'),
   ]);
+  savedRetentionDays = retention.days;
+  $('#gAuditRetention').value = retention.days;
+  $('#gUserTimeout').value = sessions.userTimeoutMinutes;
+  $('#gAdminTimeout').value = sessions.adminTimeoutMinutes;
   savedRetentionDays = retention.days;
   $('#gAuditRetention').value = retention.days;
   $('#gUserTimeout').value = sessions.userTimeoutMinutes;
@@ -431,6 +471,7 @@ async function loadSettings() {
   $('#gDuoClientSecret').placeholder = duoCfg.hasClientSecret ? 'Leave blank to keep existing' : 'Not set';
 
   $('#globalAlertsEnabled').checked = !!alerts.enabled;
+  $('#gAlertLoginSuccess').checked = !!alerts.onLoginSuccess;
   $('#gAlertLoginSuccess').checked = !!alerts.onLoginSuccess;
   $('#gAlertLoginFailure').checked = alerts.onLoginFailure !== false;
   $('#gAlertAccountAction').checked = alerts.onAccountAction !== false;
@@ -471,6 +512,31 @@ async function saveGlobalSettings() {
       adminTimeoutMinutes: Number($('#gAdminTimeout').value),
     }),
   });
+  $('#settingsError').classList.add('hidden');
+  try {
+    await saveGlobalSettings();
+  } catch (e) {
+    $('#settingsError').textContent = e.message;
+    $('#settingsError').classList.remove('hidden');
+  }
+});
+
+async function saveGlobalSettings() {
+  // Shortening retention deletes existing records immediately, so confirm first.
+  const days = Number($('#gAuditRetention').value);
+  if (days > 0 && (savedRetentionDays === 0 || days < savedRetentionDays)) {
+    const ok = confirm(`Audit records older than ${days} day(s) will be permanently deleted now and on an ongoing basis. Continue?`);
+    if (!ok) return;
+  }
+  await api('/api/admin/audit-retention', { method: 'PUT', body: JSON.stringify({ days }) });
+  // Validate/save session timeouts first so a bad value stops the save before anything else changes.
+  await api('/api/admin/session-config', {
+    method: 'PUT',
+    body: JSON.stringify({
+      userTimeoutMinutes: Number($('#gUserTimeout').value),
+      adminTimeoutMinutes: Number($('#gAdminTimeout').value),
+    }),
+  });
   await api('/api/admin/settings', {
     method: 'PUT',
     body: JSON.stringify({ auditLoggingEnabled: $('#globalAuditEnabled').checked }),
@@ -479,6 +545,7 @@ async function saveGlobalSettings() {
     method: 'PUT',
     body: JSON.stringify({
       enabled: $('#globalAlertsEnabled').checked,
+      onLoginSuccess: $('#gAlertLoginSuccess').checked,
       onLoginSuccess: $('#gAlertLoginSuccess').checked,
       onLoginFailure: $('#gAlertLoginFailure').checked,
       onAccountAction: $('#gAlertAccountAction').checked,
@@ -597,8 +664,49 @@ function renderPager(container, state, onChange) {
 
 const auditState = { page: 1, pageSize: 25 };
 
+const PAGE_SIZES = [25, 50, 100];
+
+// Renders "Showing x-y of n", a rows-per-page selector, and Previous/Next.
+function renderPager(container, state, onChange) {
+  if (!state.total) { container.innerHTML = ''; return; }
+  const start = (state.page - 1) * state.pageSize + 1;
+  const end = Math.min(state.total, state.page * state.pageSize);
+  container.innerHTML = `
+    <span class="muted">Showing ${start}–${end} of ${state.total}</span>
+    <span class="pager-controls">
+      <label class="pager-size">Rows per page
+        <select class="pager-size-select">${PAGE_SIZES.map((n) => `<option value="${n}" ${n === state.pageSize ? 'selected' : ''}>${n}</option>`).join('')}</select>
+      </label>
+      <button type="button" class="btn-secondary pager-prev" ${state.page <= 1 ? 'disabled' : ''}>Previous</button>
+      <span class="muted">Page ${state.page} of ${state.totalPages}</span>
+      <button type="button" class="btn-secondary pager-next" ${state.page >= state.totalPages ? 'disabled' : ''}>Next</button>
+    </span>`;
+  container.querySelector('.pager-size-select').addEventListener('change', (e) => onChange({ page: 1, pageSize: Number(e.target.value) }));
+  container.querySelector('.pager-prev').addEventListener('click', () => onChange({ page: state.page - 1, pageSize: state.pageSize }));
+  container.querySelector('.pager-next').addEventListener('click', () => onChange({ page: state.page + 1, pageSize: state.pageSize }));
+}
+
+const auditState = { page: 1, pageSize: 25 };
+
 async function loadAuditLog() {
   const params = auditQueryParams();
+  params.set('page', auditState.page);
+  params.set('pageSize', auditState.pageSize);
+  const result = await api('/api/admin/audit?' + params.toString());
+  auditState.page = result.page;
+  auditState.pageSize = result.pageSize;
+  renderAuditTable(result.rows);
+  renderPager($('#auditPager'), result, (next) => {
+    auditState.page = next.page;
+    auditState.pageSize = next.pageSize;
+    loadAuditLog();
+  });
+}
+
+// Changing a filter always starts again from the first page.
+function reloadAuditFromStart() {
+  auditState.page = 1;
+  loadAuditLog();
   params.set('page', auditState.page);
   params.set('pageSize', auditState.pageSize);
   const result = await api('/api/admin/audit?' + params.toString());
@@ -643,6 +751,9 @@ function auditRowHtml(r) {
 }
 
 $('#refreshAuditBtn').addEventListener('click', loadAuditLog);
+$('#auditDomainFilter').addEventListener('change', reloadAuditFromStart);
+$('#auditEventFilter').addEventListener('change', reloadAuditFromStart);
+$('#auditResultFilter').addEventListener('change', reloadAuditFromStart);
 $('#auditDomainFilter').addEventListener('change', reloadAuditFromStart);
 $('#auditEventFilter').addEventListener('change', reloadAuditFromStart);
 $('#auditResultFilter').addEventListener('change', reloadAuditFromStart);
@@ -907,6 +1018,16 @@ $('#downloadReportBtn').addEventListener('click', () => {
 });
 
 checkSession();
+
+(async function loadVersion() {
+  try {
+    const res = await fetch('/api/version');
+    const v = await res.json();
+    document.querySelector('#appVersion').textContent = v.version;
+  } catch (e) {
+    document.querySelector('#appVersion').textContent = 'unknown';
+  }
+})();
 
 (async function loadVersion() {
   try {

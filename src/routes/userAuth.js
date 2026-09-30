@@ -228,6 +228,7 @@ router.post('/logout', (req, res) => {
       domainId: data.domainId, domainLabel: domain ? domain.name : null, eventType: 'logout',
       actorUsername: data.username, success: true,
       detail: req.body && req.body.reason === 'timeout' ? 'Signed out automatically after session timeout' : null,
+      detail: req.body && req.body.reason === 'timeout' ? 'Signed out automatically after session timeout' : null,
     });
   }
   res.clearCookie('user_token');
@@ -243,6 +244,8 @@ router.get('/me', (req, res) => {
   if (!domain || !domain.enabled) {
     return res.status(401).json({ error: 'Domain disabled' });
   }
+  const ttl = refreshSession(res, data);
+  res.json({ username: data.username, domain: domain.name, features: featuresFor(domain), sessionTimeoutSeconds: ttl });
   const ttl = refreshSession(res, data);
   res.json({ username: data.username, domain: domain.name, features: featuresFor(domain), sessionTimeoutSeconds: ttl });
 });

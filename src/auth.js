@@ -3,6 +3,8 @@ const jwt = require('jsonwebtoken');
 
 const sessionConfig = require('./sessionConfig');
 
+const sessionConfig = require('./sessionConfig');
+
 const JWT_SECRET = process.env.JWT_SECRET || 'insecure-dev-secret-change-me';
 
 function hashPassword(password) {
@@ -13,6 +15,11 @@ function verifyPassword(password, hash) {
   return bcrypt.compareSync(password, hash);
 }
 
+// Token lifetimes come from the admin-configurable session timeouts
+// (independent for the user and admin portals); the fallbacks are only used
+// if a caller doesn't pass one.
+function signAdminToken(payload, ttlSeconds = sessionConfig.adminTimeoutSeconds()) {
+  return jwt.sign({ ...payload, role: 'admin' }, JWT_SECRET, { expiresIn: ttlSeconds });
 // Token lifetimes come from the admin-configurable session timeouts
 // (independent for the user and admin portals); the fallbacks are only used
 // if a caller doesn't pass one.
