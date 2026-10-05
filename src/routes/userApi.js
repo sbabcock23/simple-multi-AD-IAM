@@ -6,6 +6,7 @@ const ldap = require('../ldap');
 const audit = require('../audit');
 const logger = require('../logger');
 const mailer = require('../mailer');
+const preferences = require('../preferences');
 
 function getDomainForReq(req) {
   const domain = domainsModule.getById(req.user.domainId);
@@ -29,6 +30,21 @@ router.get('/audit', (req, res) => {
     'SELECT * FROM audit_log WHERE actor_username = ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?'
   ).all(req.user.username, pageSize, (page - 1) * pageSize);
   res.json({ rows, total, page, pageSize, totalPages });
+});
+
+// Display preferences for the signed-in user. Declared before '/:id' so
+// "preferences" is never treated as a user identifier.
+router.get('/preferences', (req, res) => {
+  res.json({ theme: preferences.getTheme('user', req.user.username) });
+});
+
+router.put('/preferences', (req, res) => {
+  try {
+    const theme = preferences.setTheme('user', req.user.username, (req.body || {}).theme);
+    res.json({ theme });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
 });
 
 router.get('/search', async (req, res) => {

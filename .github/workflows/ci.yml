@@ -1,0 +1,169 @@
+name: CI - test & validate
+
+# Runs the automated test-suite (unit + integration) on every push and pull request,
+# then builds the Docker image and smoke-tests the running container.
+# Nothing here needs secrets, so it also works for pull requests from forks.
+on:
+  push:
+    branches: ["**"]
+    tags: ["*"]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch/PR cancels the older run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Unit + integration tests.
+  #    Node 20 matches the Dockerfile; Node 22 is the current LTS.
+  #    The tests need no Active Directory, Duo account or SMTP server: they run the real
+  #    server.js against in-memory fakes (see tests/README.md).
+  # ---------------------------------------------------------------------------
+  test:
+    name: Tests (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # better-sqlite3 is a native module; prebuilt binaries are used when available,
+      # otherwise it is compiled (build tools are preinstalled on ubuntu-latest).
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+
+      - name: Syntax-check all source files
+        run: |
+          set -e
+          for f in server.js src/*.js src/routes/*.js public/js/*.js; do node --check "$f"; done
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: Integration tests (real server.js, fake AD / Duo / SMTP)
+        run: npm run test:integration
+
+  # ---------------------------------------------------------------------------
+  # 2. Build the production image and prove the container actually works:
+  #    both portals come up, the Docker HEALTHCHECK goes healthy, the bootstrap admin can
+  #    sign in, the user portal rejects an unknown domain, and the two ports stay isolated.
+  # ---------------------------------------------------------------------------
+  container-smoke:
+    name: Docker image smoke test
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: iam-self-service:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start container
+        run: |
+          docker run -d --name iam \
+            -p 3000:3000 -p 3001:3001 \
+            -e JWT_SECRET=ci-jwt-secret-$(openssl rand -hex 16) \
+            -e ENCRYPTION_KEY=ci-encryption-key-$(openssl rand -hex 16) \
+            -e ADMIN_BOOTSTRAP_USER=admin \
+            -e ADMIN_BOOTSTRAP_PASSWORD='Ci-Smoke-Pass-1!' \
+            iam-self-service:ci
+
+      - name: Wait for the Docker HEALTHCHECK to report healthy
+        run: |
+          for i in $(seq 1 40); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' iam)
+            echo "health: $status"
+            [ "$status" = "healthy" ] && exit 0
+            [ "$(docker inspect -f '{{.State.Running}}' iam)" = "false" ] && break
+            sleep 3
+          done
+          docker logs iam
+          exit 1
+
+      - name: Smoke-test both portals
+        run: |
+          set -euo pipefail
+          expect() { # expect <description> <actual> <expected>
+            if [ "$2" != "$3" ]; then echo "FAIL: $1 (got '$2', wanted '$3')"; docker logs iam; exit 1; fi
+            echo "ok: $1"
+          }
+          version=$(node -p "require('./package.json').version")
+
+          expect "user portal health"  "$(curl -fsS localhost:3000/api/health)" '{"ok":true,"app":"user"}'
+          expect "admin portal health" "$(curl -fsS localhost:3001/api/health)" '{"ok":true,"app":"admin"}'
+          expect "version endpoint"    "$(curl -fsS localhost:3000/api/version)" "{\"version\":\"$version\"}"
+          expect "user UI served"      "$(curl -s -o /dev/null -w '%{http_code}' localhost:3000/)" 200
+          expect "admin UI served"     "$(curl -s -o /dev/null -w '%{http_code}' localhost:3001/)" 200
+
+          # Port isolation: admin API must not exist on the user port, and vice versa.
+          expect "admin API absent on user port" "$(curl -s -o /dev/null -w '%{http_code}' localhost:3000/api/admin/domains)" 404
+          expect "user API absent on admin port" "$(curl -s -o /dev/null -w '%{http_code}' localhost:3001/api/auth/me)" 404
+
+          # Admin API is protected; bootstrap login works and unlocks it.
+          expect "admin API requires login" "$(curl -s -o /dev/null -w '%{http_code}' localhost:3001/api/admin/domains)" 401
+          expect "bad admin password rejected" "$(curl -s -o /dev/null -w '%{http_code}' -H 'content-type: application/json' \
+            -d '{"username":"admin","password":"nope"}' localhost:3001/api/admin/login)" 401
+          expect "bootstrap admin login" "$(curl -s -o /dev/null -c jar.txt -w '%{http_code}' -H 'content-type: application/json' \
+            -d '{"username":"admin","password":"Ci-Smoke-Pass-1!"}' localhost:3001/api/admin/login)" 200
+          expect "admin API with session" "$(curl -s -b jar.txt -o /dev/null -w '%{http_code}' localhost:3001/api/admin/domains)" 200
+
+          # User portal fails safely for a domain that is not configured.
+          expect "unknown domain rejected" "$(curl -s -o /dev/null -w '%{http_code}' -H 'content-type: application/json' \
+            -d '{"username":"x@nowhere.test","password":"x"}' localhost:3000/api/auth/login)" 401
+
+      - name: Container logs
+        if: always()
+        run: docker logs iam || true
+
+  # ---------------------------------------------------------------------------
+  # 3. Informational: known vulnerabilities in production dependencies.
+  #    Never blocks a merge (advisories appear on their own schedule); read the job log.
+  # ---------------------------------------------------------------------------
+  dependency-audit:
+    name: npm audit (informational)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high

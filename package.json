@@ -1,10 +1,13 @@
 {
   "name": "iam-self-service",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Multi-domain Active Directory self-service portal for account unlock and password reset",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node tests/run.js all",
+    "test:unit": "node tests/run.js unit",
+    "test:integration": "node tests/run.js integration"
   },
   "dependencies": {
     "@duosecurity/duo_universal": "^3.0.0",

@@ -6,6 +6,7 @@ const ldap = require('../ldap');
 const logger = require('../logger');
 const mailer = require('../mailer');
 const duo = require('../duo');
+const preferences = require('../preferences');
 const templates = require('../templates');
 const cryptoHelper = require('../crypto');
 const { hashPassword } = require('../auth');
@@ -442,6 +443,21 @@ router.post('/alerts/test', async (req, res) => {
   }
 });
 
+// ---------- Display preferences (per admin) ----------
+
+router.get('/preferences', (req, res) => {
+  res.json({ theme: preferences.getTheme('admin', req.admin.username) });
+});
+
+router.put('/preferences', (req, res) => {
+  try {
+    const theme = preferences.setTheme('admin', req.admin.username, (req.body || {}).theme);
+    res.json({ theme });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
 // ---------- Global Cisco Duo MFA settings ----------
 
 router.get('/duo', (req, res) => {
@@ -471,29 +487,62 @@ router.put('/duo', (req, res) => {
   res.json(duo.sanitize(newCfg));
 });
 
+// Works out which credentials a "Test" click should use. The browser never
+// receives a saved client secret (only a hasClientSecret flag), so the secret
+// box is blank whenever the person comes back to a saved configuration. A
+// blank secret therefore has to mean "use the one already saved FOR THE SAME
+// SCOPE" - the global Duo app for the global form, or that domain's own
+// override for a domain form. (Previously a blank secret on a domain override
+// silently fell back to the *global* secret, so the test failed with the
+// wrong secret after the override had been saved.)
+function resolveDuoTestCredentials(b) {
+  const typed = (v) => (typeof v === 'string' ? v.trim() : undefined);
+
+  // Domain form with "use its own Duo application" unticked: it will use the
+  // saved global Duo application, so test exactly that.
+  if (b.scope === 'domain' && !b.credentialsOverride) {
+    return duo.resolveEffective(null);
+  }
+
+  let saved;
+  if (b.scope === 'domain') {
+    const row = b.domainId ? db.prepare('SELECT duo_config FROM domains WHERE id = ?').get(b.domainId) : null;
+    saved = row ? duo.getDomainConfig(row) : duo.DOMAIN_DEFAULTS;
+  } else if (b.clientId === undefined && b.apiHostname === undefined && b.redirectUrl === undefined && !b.clientSecret) {
+    // Nothing supplied at all: test whatever global app is saved.
+    return duo.resolveEffective(null);
+  } else {
+    saved = duo.getGlobalConfig();
+  }
+
+  let clientSecret = typeof b.clientSecret === 'string' ? b.clientSecret : '';
+  if (!clientSecret && saved.clientSecretEnc) {
+    try {
+      clientSecret = cryptoHelper.decrypt(saved.clientSecretEnc);
+    } catch (e) {
+      throw new Error('The saved Duo client secret could not be decrypted (has ENCRYPTION_KEY changed?). Re-enter the client secret and save again.');
+    }
+  }
+  return {
+    clientId: typed(b.clientId) !== undefined ? typed(b.clientId) : saved.clientId,
+    apiHostname: typed(b.apiHostname) !== undefined ? typed(b.apiHostname) : saved.apiHostname,
+    redirectUrl: typed(b.redirectUrl) !== undefined ? typed(b.redirectUrl) : saved.redirectUrl,
+    clientSecret,
+  };
+}
+
 router.post('/duo/test', async (req, res) => {
   const b = req.body || {};
   try {
-    let effective;
-    if (b.clientId || b.apiHostname || b.redirectUrl || b.clientSecret) {
-      const existing = duo.getGlobalConfig();
-      effective = {
-        clientId: b.clientId !== undefined ? b.clientId.trim() : existing.clientId,
-        apiHostname: b.apiHostname !== undefined ? b.apiHostname.trim() : existing.apiHostname,
-        redirectUrl: b.redirectUrl !== undefined ? b.redirectUrl.trim() : existing.redirectUrl,
-        clientSecret: b.clientSecret || (existing.clientSecretEnc ? cryptoHelper.decrypt(existing.clientSecretEnc) : ''),
-      };
-    } else {
-      effective = duo.resolveEffective(null);
-    }
+    const effective = resolveDuoTestCredentials(b);
     if (!duo.isConfigured(effective)) {
       return res.status(400).json({ error: 'Client ID, client secret, API hostname, and redirect URL are all required to test' });
     }
     await duo.healthCheck(effective);
-    logger.info('duo_test_succeeded', { requestId: req.id, admin: req.admin.username });
+    logger.info('duo_test_succeeded', { requestId: req.id, admin: req.admin.username, scope: b.scope || 'global' });
     res.json({ ok: true, message: 'Duo health check succeeded - the API hostname and credentials are valid.' });
   } catch (e) {
-    logger.warn('duo_test_failed', { requestId: req.id, admin: req.admin.username, ...logger.errInfo(e) });
+    logger.warn('duo_test_failed', { requestId: req.id, admin: req.admin.username, scope: b.scope || 'global', ...logger.errInfo(e) });
     res.status(400).json({ ok: false, error: e.message });
   }
 });
