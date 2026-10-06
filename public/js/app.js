@@ -20,6 +20,8 @@ const sessionGuard = createSessionGuard({
   },
 });
 
+IAMTheme.configure({ endpoint: '/api/users/preferences' });
+
 let currentFeatures = {};
 let selectedUser = null;
 
@@ -58,6 +60,7 @@ async function checkSession() {
 }
 
 function showLogin() {
+  IAMTheme.onSignOut();
   try {
     if (sessionStorage.getItem(EXPIRED_FLAG)) {
       sessionStorage.removeItem(EXPIRED_FLAG);
@@ -71,6 +74,7 @@ function showLogin() {
 }
 
 function showApp(me) {
+  IAMTheme.onSignIn(me);
   currentFeatures = me.features;
   sessionGuard.start(me.sessionTimeoutSeconds);
   $('#loginView').classList.add('hidden');

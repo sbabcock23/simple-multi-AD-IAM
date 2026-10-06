@@ -7,6 +7,7 @@ const logger = require('../logger');
 const mailer = require('../mailer');
 const duo = require('../duo');
 const cryptoHelper = require('../crypto');
+const preferences = require('../preferences');
 const { signUserToken, signMfaPendingToken, verifyToken, sessionCookieOptions, refreshSession } = require('../auth');
 const sessionConfig = require('../sessionConfig');
 
@@ -151,7 +152,7 @@ router.post('/login', async (req, res) => {
   }
 
   const ttl = completeLogin(req, res, { username, domain, bindDn: authorizedUser.dn, password });
-  res.json({ ok: true, username, domain: domain.name, features: featuresFor(domain), sessionTimeoutSeconds: ttl });
+  res.json({ ok: true, username, domain: domain.name, features: featuresFor(domain), sessionTimeoutSeconds: ttl, theme: preferences.getTheme('user', username) });
 });
 
 // Duo redirects the browser back here after the person completes (or
@@ -244,7 +245,7 @@ router.get('/me', (req, res) => {
     return res.status(401).json({ error: 'Domain disabled' });
   }
   const ttl = refreshSession(res, data);
-  res.json({ username: data.username, domain: domain.name, features: featuresFor(domain), sessionTimeoutSeconds: ttl });
+  res.json({ username: data.username, domain: domain.name, features: featuresFor(domain), sessionTimeoutSeconds: ttl, theme: preferences.getTheme('user', data.username) });
 });
 
 module.exports = router;

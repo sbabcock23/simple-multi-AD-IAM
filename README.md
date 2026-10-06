@@ -132,6 +132,10 @@ redirect to Duo and back is a short-lived (5 minute), signed, httpOnly
 cookie separate from the real session cookie - a session is never issued
 until Duo confirms the second factor.
 
+## Light and dark mode
+
+Both portals have a sun/moon button in the top bar. The choice is saved against the signed-in person's account (per portal and username, in the `user_preferences` table), so it follows them to any browser or device. Before sign-in, the login screen uses the last theme picked in that browser, or the operating system's light/dark setting if none was ever picked. Nothing needs to be configured.
+
 ## Audit logging
 
 - A **global switch** (Admin → Audit settings) turns all logging on or off.
