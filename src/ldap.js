@@ -193,16 +193,42 @@ async function withUserBind(domainConfig, bindIdentity, password, fn) {
   }
 }
 
+// Runs a search and resolves with every entry received. The returned array
+// has a non-enumerable `truncated` flag that is true when the server stopped
+// early because the sizeLimit was hit (LDAP result code 4 - AD reports this
+// as an *error* even though the entries it did send are perfectly valid).
+// Treating that as a hard failure is what made broad queries such as "ma"
+// fail with "Size Limit Exceeded" while narrower ones succeeded: callers
+// get the partial page and decide whether to tell the user it was capped.
+function isSizeLimitError(err) {
+  return !!err && (err.name === 'SizeLimitExceededError' || err.code === 4 ||
+    /size limit exceeded/i.test(err.message || ''));
+}
+
 function searchAsync(client, base, options) {
   return new Promise((resolve, reject) => {
     const results = [];
+    let truncated = false;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      Object.defineProperty(results, 'truncated', { value: truncated, enumerable: false });
+      resolve(results);
+    };
     client.search(base, options, (err, res) => {
-      if (err) return reject(err);
+      if (err) {
+        if (isSizeLimitError(err)) { truncated = true; return finish(); }
+        return reject(err);
+      }
       res.on('searchEntry', (entry) => {
         results.push(entryToObject(entry));
       });
-      res.on('error', (err2) => reject(err2));
-      res.on('end', () => resolve(results));
+      res.on('error', (err2) => {
+        if (isSizeLimitError(err2)) { truncated = true; return finish(); }
+        if (!done) { done = true; reject(err2); }
+      });
+      res.on('end', finish);
     });
   });
 }
@@ -231,6 +257,18 @@ function escapeFilter(str) {
   });
 }
 
+// lockoutTime stays non-zero after a lockout *expires* on its own, so when
+// AD supplies the constructed msDS-User-Account-Control-Computed attribute
+// (UF_LOCKOUT = 0x10) it is the authoritative answer; otherwise fall back to
+// lockoutTime.
+function isLocked(u) {
+  const computed = u['msDS-User-Account-Control-Computed'];
+  if (computed !== undefined && computed !== '') {
+    return !!(parseInt(computed, 10) & 0x10);
+  }
+  return !!u.lockoutTime && u.lockoutTime !== '0';
+}
+
 function mapUser(u) {
   const uac = parseInt(u.userAccountControl || '0', 10);
   return {
@@ -240,12 +278,12 @@ function mapUser(u) {
     displayName: u.displayName || u.cn,
     userPrincipalName: u.userPrincipalName,
     mail: u.mail,
-    locked: !!u.lockoutTime && u.lockoutTime !== '0',
+    locked: isLocked(u),
     disabled: !!(uac & 2),
   };
 }
 
-const USER_ATTRIBUTES = ['dn', 'sAMAccountName', 'cn', 'displayName', 'userPrincipalName', 'lockoutTime', 'userAccountControl', 'mail'];
+const USER_ATTRIBUTES = ['dn', 'sAMAccountName', 'cn', 'displayName', 'userPrincipalName', 'lockoutTime', 'userAccountControl', 'mail', 'msDS-User-Account-Control-Computed'];
 
 // LDAP_MATCHING_RULE_IN_CHAIN: Active Directory's "walk the whole nested
 // group chain" operator. Used here so a helpdesk account that's a member of
@@ -380,6 +418,11 @@ async function authenticateAndAuthorize(domainConfig, typedIdentifier, password,
   }
 }
 
+const SEARCH_LIMIT = 25;
+const LOCKED_LIST_LIMIT = 200;
+
+// Returns { users, truncated }. `truncated` is true when more accounts
+// matched than the limit allows, so the UI can ask for a narrower search.
 async function searchUsers(domainConfig, bindDn, password, query) {
   return withUserBind(domainConfig, bindDn, password, async (client) => {
     const q = escapeFilter(query);
@@ -388,9 +431,25 @@ async function searchUsers(domainConfig, bindDn, password, query) {
       `(|(sAMAccountName=*${q}*)(cn=*${q}*)(displayName=*${q}*)(userPrincipalName=*${q}*)))`;
     logger.debug('ldap_search', { baseDn: domainConfig.base_dn, filter });
     const results = await searchAsync(client, domainConfig.base_dn, {
-      filter, scope: 'sub', attributes: USER_ATTRIBUTES, sizeLimit: 25,
+      filter, scope: 'sub', attributes: USER_ATTRIBUTES, sizeLimit: SEARCH_LIMIT,
     });
-    return results.map(mapUser);
+    return { users: results.map(mapUser), truncated: !!results.truncated };
+  });
+}
+
+// Currently locked-out accounts, for pre-populating the unlock list.
+// (lockoutTime>=1) is evaluated server-side; accounts whose lockout has
+// since expired are then dropped using the computed lockout flag.
+async function listLockedUsers(domainConfig, bindDn, password) {
+  return withUserBind(domainConfig, bindDn, password, async (client) => {
+    const filter = '(&(objectCategory=person)(objectClass=user)(lockoutTime>=1))';
+    logger.debug('ldap_list_locked', { baseDn: domainConfig.base_dn });
+    const results = await searchAsync(client, domainConfig.base_dn, {
+      filter, scope: 'sub', attributes: USER_ATTRIBUTES, sizeLimit: LOCKED_LIST_LIMIT,
+    });
+    const users = results.map(mapUser).filter((u) => u.locked)
+      .sort((a, b) => String(a.displayName || '').localeCompare(String(b.displayName || '')));
+    return { users, truncated: !!results.truncated };
   });
 }
 
@@ -508,6 +567,7 @@ module.exports = {
   authenticateAndAuthorize,
   lookupByMail,
   searchUsers,
+  listLockedUsers,
   getUserByIdentifier,
   unlockUser,
   resetPassword,

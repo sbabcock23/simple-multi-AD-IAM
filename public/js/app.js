@@ -82,6 +82,7 @@ function showApp(me) {
   $('#userInfo').classList.remove('hidden');
   $('#userLabel').textContent = `${me.username} (${me.domain})`;
   loadActivity(1);
+  loadLocked();
 }
 
 const MFA_ERROR_MESSAGES = {
@@ -139,16 +140,15 @@ $('#userLookupQuery').addEventListener('input', () => {
 
 async function runSearch(q) {
   try {
-    const results = await api('/api/users/search?q=' + encodeURIComponent(q));
-    renderResults(results);
+    const { users, truncated } = await api('/api/users/search?q=' + encodeURIComponent(q));
+    renderResults(users, $('#searchResults'), truncated);
   } catch (e) {
     $('#searchResults').innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`;
   }
 }
 
-function renderResults(results) {
-  const container = $('#searchResults');
-  if (!results.length) { container.innerHTML = '<div class="muted">No matches</div>'; return; }
+function renderResults(results, container, truncated, emptyText = 'No matches') {
+  if (!results.length) { container.innerHTML = `<div class="muted">${escapeHtml(emptyText)}</div>`; return; }
   container.innerHTML = '';
   results.forEach((u) => {
     const div = document.createElement('div');
@@ -166,7 +166,28 @@ function renderResults(results) {
     div.addEventListener('click', () => selectUser(u));
     container.appendChild(div);
   });
+  if (truncated) {
+    const note = document.createElement('div');
+    note.className = 'muted';
+    note.textContent = 'Showing the first results only - type more of the name to narrow the search.';
+    container.appendChild(note);
+  }
 }
+
+// Pre-populated list of currently locked accounts (unlock-enabled domains only).
+async function loadLocked() {
+  const card = $('#lockedCard');
+  if (!currentFeatures.unlock) { card.classList.add('hidden'); return; }
+  card.classList.remove('hidden');
+  try {
+    const { users, truncated } = await api('/api/users/locked');
+    renderResults(users, $('#lockedResults'), truncated, 'No locked accounts');
+  } catch (e) {
+    $('#lockedResults').innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+$('#refreshLockedBtn').addEventListener('click', loadLocked);
 
 function selectUser(u) {
   selectedUser = u;
@@ -192,6 +213,7 @@ $('#unlockBtn').addEventListener('click', async () => {
     showNotice('Account unlocked', `The account for ${name} has been unlocked.`, false);
     const refreshed = await api(`/api/users/${encodeURIComponent(selectedUser.sAMAccountName)}`);
     selectUser(refreshed);
+    loadLocked();
     if ($('#userLookupQuery').value.trim().length >= 2) runSearch($('#userLookupQuery').value.trim());
   } catch (e) {
     showNotice('Unlock failed', e.message, true);

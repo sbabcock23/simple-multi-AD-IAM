@@ -52,7 +52,7 @@ router.get('/search', async (req, res) => {
   const q = (req.query.q || '').trim();
   try {
     domain = getDomainForReq(req);
-    if (q.length < 2) return res.json([]);
+    if (q.length < 2) return res.json({ users: [], truncated: false });
     const results = await ldap.searchUsers(domain, req.user.ldapBindDn, req.user.password, q);
     audit.logEvent(req, {
       domainId: domain.id, domainLabel: domain.name, eventType: 'search',
@@ -66,6 +66,19 @@ router.get('/search', async (req, res) => {
       eventType: 'search', actorUsername: req.user.username, targetIdentifier: q,
       success: false, detail: e.message,
     });
+    res.status(e.status || 500).json({ error: e.message, requestId: req.id });
+  }
+});
+
+// Currently locked accounts, so the UI can show them without a search.
+// Declared before '/:id' so "locked" is never treated as a user identifier.
+router.get('/locked', async (req, res) => {
+  try {
+    const domain = getDomainForReq(req);
+    if (!domain.feature_unlock) return res.json({ users: [], truncated: false });
+    res.json(await ldap.listLockedUsers(domain, req.user.ldapBindDn, req.user.password));
+  } catch (e) {
+    logger.error('locked_list_failed', { requestId: req.id, actor: req.user.username, ...logger.errInfo(e) });
     res.status(e.status || 500).json({ error: e.message, requestId: req.id });
   }
 });
