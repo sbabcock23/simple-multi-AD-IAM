@@ -158,11 +158,30 @@ function renderResults(results) {
         <div class="result-name">${escapeHtml(u.displayName || u.cn)}</div>
         <div class="muted">${escapeHtml(u.userPrincipalName || u.sAMAccountName)}</div>
       </div>
+      <div class="row-actions"></div>
       <div class="badges">
         ${u.locked ? '<span class="badge badge-locked">Locked</span>' : ''}
         ${u.disabled ? '<span class="badge badge-disabled">Disabled</span>' : ''}
         ${!u.locked && !u.disabled ? '<span class="badge badge-ok">Active</span>' : ''}
       </div>`;
+    // Action buttons are shown inline so no row has to be selected first.
+    const actions = div.querySelector('.row-actions');
+    if (currentFeatures.unlock && u.locked) {
+      const unlock = document.createElement('button');
+      unlock.type = 'button';
+      unlock.className = 'btn-primary btn-sm';
+      unlock.textContent = 'Unlock';
+      unlock.addEventListener('click', (e) => { e.stopPropagation(); selectedUser = u; performUnlock(u); });
+      actions.appendChild(unlock);
+    }
+    if (currentFeatures.reset) {
+      const reset = document.createElement('button');
+      reset.type = 'button';
+      reset.className = 'btn-secondary btn-sm';
+      reset.textContent = 'Reset password';
+      reset.addEventListener('click', (e) => { e.stopPropagation(); selectedUser = u; openResetModal(u); });
+      actions.appendChild(reset);
+    }
     div.addEventListener('click', () => selectUser(u));
     container.appendChild(div);
   });
@@ -184,30 +203,38 @@ function selectUser(u) {
   $('#actionMessage').classList.add('hidden');
 }
 
-$('#unlockBtn').addEventListener('click', async () => {
-  if (!selectedUser || !selectedUser.locked) return;
-  const name = selectedUser.displayName || selectedUser.cn;
+$('#unlockBtn').addEventListener('click', () => {
+  if (selectedUser) performUnlock(selectedUser);
+});
+
+async function performUnlock(user) {
+  if (!user || !user.locked) return;
+  const name = user.displayName || user.cn;
   try {
-    await api(`/api/users/${encodeURIComponent(selectedUser.sAMAccountName)}/unlock`, { method: 'POST' });
+    await api(`/api/users/${encodeURIComponent(user.sAMAccountName)}/unlock`, { method: 'POST' });
     showNotice('Account unlocked', `The account for ${name} has been unlocked.`, false);
-    const refreshed = await api(`/api/users/${encodeURIComponent(selectedUser.sAMAccountName)}`);
-    selectUser(refreshed);
+    const refreshed = await api(`/api/users/${encodeURIComponent(user.sAMAccountName)}`);
+    // Only update the detail card if it is showing this user.
+    if (selectedUser && selectedUser.sAMAccountName === user.sAMAccountName) selectUser(refreshed);
     if ($('#userLookupQuery').value.trim().length >= 2) runSearch($('#userLookupQuery').value.trim());
   } catch (e) {
     showNotice('Unlock failed', e.message, true);
   } finally {
     loadActivity(1);
   }
-});
+}
 
-$('#resetBtn').addEventListener('click', () => {
-  $('#resetForUser').textContent = selectedUser.displayName || selectedUser.cn;
+$('#resetBtn').addEventListener('click', () => openResetModal(selectedUser));
+
+function openResetModal(user) {
+  selectedUser = user;
+  $('#resetForUser').textContent = user.displayName || user.cn;
   $('#forceChangeRow').classList.toggle('hidden', !currentFeatures.forceChange);
   $('#newPassword').value = '';
   $('#confirmPassword').value = '';
   $('#resetError').classList.add('hidden');
   $('#resetModal').classList.remove('hidden');
-});
+}
 
 $('#cancelReset').addEventListener('click', () => $('#resetModal').classList.add('hidden'));
 

@@ -120,6 +120,8 @@ input[type=checkbox] { margin-right: 8px; }
 .result-row:hover { background: var(--hover-bg); }
 .result-name { font-weight: 600; font-size: 14px; }
 .badges { display: flex; gap: 6px; }
+.row-actions { display: flex; gap: 8px; margin-left: auto; margin-right: 12px; flex-wrap: wrap; }
+.btn-sm { padding: 4px 10px; font-size: 0.85rem; }
 .badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; font-weight: 600; white-space: nowrap; }
 .badge-locked { background: var(--badge-locked-bg); color: var(--badge-locked-fg); }
 .badge-disabled { background: var(--badge-disabled-bg); color: var(--badge-disabled-fg); }
