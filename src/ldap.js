@@ -394,6 +394,19 @@ async function searchUsers(domainConfig, bindDn, password, query) {
   });
 }
 
+// Accounts with a lockout timestamp set. AD leaves lockoutTime populated after
+// the lockout duration expires, so drop entries mapUser() no longer reports as locked.
+async function listLockedUsers(domainConfig, bindDn, password) {
+  return withUserBind(domainConfig, bindDn, password, async (client) => {
+    const filter = '(&(objectCategory=person)(objectClass=user)(lockoutTime>=1))';
+    logger.debug('ldap_list_locked', { baseDn: domainConfig.base_dn, filter });
+    const results = await searchAsync(client, domainConfig.base_dn, {
+      filter, scope: 'sub', attributes: USER_ATTRIBUTES, sizeLimit: 200,
+    });
+    return results.map(mapUser).filter((u) => u.locked);
+  });
+}
+
 async function getUserByIdentifier(domainConfig, bindDn, password, identifier) {
   return withUserBind(domainConfig, bindDn, password, async (client) => {
     const q = escapeFilter(identifier);
@@ -508,6 +521,7 @@ module.exports = {
   authenticateAndAuthorize,
   lookupByMail,
   searchUsers,
+  listLockedUsers,
   getUserByIdentifier,
   unlockUser,
   resetPassword,

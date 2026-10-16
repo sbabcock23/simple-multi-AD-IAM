@@ -82,6 +82,7 @@ function showApp(me) {
   $('#userInfo').classList.remove('hidden');
   $('#userLabel').textContent = `${me.username} (${me.domain})`;
   loadActivity(1);
+  loadLocked();
 }
 
 const MFA_ERROR_MESSAGES = {
@@ -137,6 +138,17 @@ $('#userLookupQuery').addEventListener('input', () => {
   searchTimeout = setTimeout(() => runSearch(q), 300);
 });
 
+async function loadLocked() {
+  const container = $('#lockedResults');
+  try {
+    renderResults(await api('/api/users/locked'), container, 'No locked accounts');
+  } catch (e) {
+    container.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+$('#refreshLockedBtn').addEventListener('click', loadLocked);
+
 async function runSearch(q) {
   try {
     const results = await api('/api/users/search?q=' + encodeURIComponent(q));
@@ -146,9 +158,8 @@ async function runSearch(q) {
   }
 }
 
-function renderResults(results) {
-  const container = $('#searchResults');
-  if (!results.length) { container.innerHTML = '<div class="muted">No matches</div>'; return; }
+function renderResults(results, container = $('#searchResults'), emptyText = 'No matches') {
+  if (!results.length) { container.innerHTML = `<div class="muted">${escapeHtml(emptyText)}</div>`; return; }
   container.innerHTML = '';
   results.forEach((u) => {
     const div = document.createElement('div');
@@ -217,6 +228,7 @@ async function performUnlock(user) {
     // Only update the detail card if it is showing this user.
     if (selectedUser && selectedUser.sAMAccountName === user.sAMAccountName) selectUser(refreshed);
     if ($('#userLookupQuery').value.trim().length >= 2) runSearch($('#userLookupQuery').value.trim());
+    loadLocked();
   } catch (e) {
     showNotice('Unlock failed', e.message, true);
   } finally {

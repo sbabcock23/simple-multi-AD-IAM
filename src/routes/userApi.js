@@ -70,6 +70,17 @@ router.get('/search', async (req, res) => {
   }
 });
 
+router.get('/locked', async (req, res) => {
+  try {
+    const domain = getDomainForReq(req);
+    const results = await ldap.listLockedUsers(domain, req.user.ldapBindDn, req.user.password);
+    res.json(results);
+  } catch (e) {
+    logger.error('locked_list_failed', { requestId: req.id, actor: req.user.username, ...logger.errInfo(e) });
+    res.status(e.status || 500).json({ error: e.message, requestId: req.id });
+  }
+});
+
 router.get('/:id', async (req, res) => {
   try {
     const domain = getDomainForReq(req);
